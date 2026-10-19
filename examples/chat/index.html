@@ -64,14 +64,16 @@ function renderLog(fresh) {
   if (fresh) for (const id of fresh) $("log").querySelector(`[data-id="${id}"]`)?.classList.add("fresh");
   if (atBottom || !fresh) scrollTo(0, document.body.scrollHeight);
 }
-const log = new EventSource("/messages?order=desc&limit=100");
-log.addEventListener("snapshot", (e) => {
+// Everything this page follows, on one connection: browsers allow six
+// per host, and every open stream keeps one.
+const live = new EventSource("/_live?" + new URLSearchParams({ messages: "order=desc&limit=100", total: "", by_author: "" }));
+live.addEventListener("messages.snapshot", (e) => {
   const { epoch: at, data } = JSON.parse(e.data);
   messages.clear();
   for (const { key, value } of data.items) messages.set(key, value);
   saw(at); renderLog();
 });
-log.addEventListener("change", (e) => {
+live.addEventListener("messages.change", (e) => {
   const { epoch: at, changes } = JSON.parse(e.data);
   const fresh = [];
   for (const { key, value, diff } of changes) {
@@ -82,9 +84,8 @@ log.addEventListener("change", (e) => {
 });
 
 // The counts, live from two views.
-const total = new EventSource("/total");
-total.addEventListener("snapshot", (e) => { const s = JSON.parse(e.data); $("total").textContent = `${s.data ?? 0} messages`; });
-total.addEventListener("change", (e) => {
+live.addEventListener("total.snapshot", (e) => { const s = JSON.parse(e.data); $("total").textContent = `${s.data ?? 0} messages`; });
+live.addEventListener("total.change", (e) => {
   const c = JSON.parse(e.data).changes.find((c) => c.diff > 0);
   if (c) $("total").textContent = `${c.value} messages`;
 });
@@ -92,13 +93,12 @@ const authors = new Map();
 function renderAuthors() {
   $("authors").innerHTML = [...authors].map(([a, n]) => `<span class="pill" style="color:${color(a)}" title="${n} messages">${a.slice(0, 8)}</span>`).join(" ");
 }
-const byAuthor = new EventSource("/by_author");
-byAuthor.addEventListener("snapshot", (e) => {
+live.addEventListener("by_author.snapshot", (e) => {
   authors.clear();
   for (const { key, value } of JSON.parse(e.data).data.items) authors.set(key, value);
   renderAuthors();
 });
-byAuthor.addEventListener("change", (e) => {
+live.addEventListener("by_author.change", (e) => {
   for (const { key, value, diff } of JSON.parse(e.data).changes) {
     if (diff > 0) authors.set(key, value); else if (authors.get(key) === value) authors.delete(key);
   }

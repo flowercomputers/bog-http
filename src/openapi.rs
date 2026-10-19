@@ -367,5 +367,24 @@ fn meta_paths(paths: &mut Map<String, Value>) {
         meta("schema", "Describe every resource: kind, schemas, routes"),
     );
     paths.insert("/_health".into(), meta("health", "Liveness"));
+    paths.insert(
+        "/_live".into(),
+        json!({
+            "get": {
+                "operationId": "live",
+                "summary": "Follow several resources on one connection",
+                "description": format!("Server-Sent Events. Each query parameter names a resource that streams and carries, URL-encoded, the query its own stream would take: `?messages=order%3Ddesc%26limit%3D50&total=`. Events are `<resource>.snapshot` and `<resource>.change`, with the data of the resource's own stream; each `id` lists every resource's epoch, dot-separated in request order, for `Last-Event-ID`. At most {} resources. Browsers allow six HTTP/1.1 connections per host, and every open stream holds one: follow many resources here, not one stream each.", crate::server::MAX_LIVE),
+                "tags": ["meta"],
+                "responses": {
+                    "200": {
+                        "description": "An event stream.",
+                        "content": { "text/event-stream": { "schema": { "type": "string" } } },
+                    },
+                    "400": { "$ref": "#/components/responses/BadRequest" },
+                    "406": { "$ref": "#/components/responses/NotAcceptable" },
+                },
+            },
+        }),
+    );
     paths.insert("/openapi.json".into(), meta("openapi", "This document"));
 }

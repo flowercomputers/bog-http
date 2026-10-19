@@ -75,6 +75,12 @@
 //! hub per resource drains fold's subscription; a client that falls
 //! behind gets a fresh snapshot instead of an unbounded backlog.
 //!
+//! A page following several resources should use `GET /_live`, which
+//! carries any of them on one connection
+//! (`?messages=order%3Ddesc&total=`, events named `messages.change`):
+//! browsers allow six HTTP/1.1 connections per host, and each open
+//! stream holds one for good.
+//!
 //! # Serving
 //! [`Server::serve`] binds, serves until ctrl-c or SIGTERM, ends live
 //! streams, drains requests, and checkpoints. [`cors`] admits a browser
@@ -107,7 +113,7 @@ pub use resource::{
 pub use resources::{
     BagAdd, BagRemove, By, CompleteParams, Completion, Hit, OrderedParams, SearchParams,
 };
-pub use server::{Closer, MIN_EPOCH_HEADER, Server};
+pub use server::{Closer, MAX_LIVE, MIN_EPOCH_HEADER, Server};
 
 /// A CORS layer for a browser app on another origin (a dev server, a
 /// desktop shell): these origins only, with the methods and headers the

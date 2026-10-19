@@ -11,9 +11,10 @@
 //! ```
 //!
 //! Everything the page does is plain fold-http:
-//! - `GET /messages?order=desc&limit=100` with `Accept:
-//!   text/event-stream`: the newest messages, then each new one as it
-//!   commits; `GET /total` and `GET /by_author` likewise;
+//! - `GET /_live?messages=…&total=&by_author=`: one event stream carrying
+//!   three resources: the newest messages and then each new one as it
+//!   commits, and the two count views likewise. One connection, because
+//!   browsers allow six per host and each open stream keeps one;
 //! - `POST /send`: a custom route stamping the server's clock;
 //! - `GET /find?q=`: a custom route over the search view, completing an
 //!   unfinished last word from the index's own terms, as the gallery does.

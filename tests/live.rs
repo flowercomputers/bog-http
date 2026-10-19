@@ -16,6 +16,7 @@ use tower::ServiceExt;
 struct Sse {
     event: String,
     id: Option<u64>,
+    id_text: Option<String>,
     data: Value,
 }
 
@@ -31,9 +32,25 @@ impl Stream {
         path: &str,
         last_event_id: Option<u64>,
     ) -> Result<Stream, (StatusCode, Value)> {
+        Stream::open_raw(app, path, last_event_id.map(|id| id.to_string())).await
+    }
+
+    async fn open_with_id(
+        app: &Router,
+        path: &str,
+        id: &str,
+    ) -> Result<Stream, (StatusCode, Value)> {
+        Stream::open_raw(app, path, Some(id.to_owned())).await
+    }
+
+    async fn open_raw(
+        app: &Router,
+        path: &str,
+        last_event_id: Option<String>,
+    ) -> Result<Stream, (StatusCode, Value)> {
         let mut req = Request::get(path).header(header::ACCEPT, "text/event-stream");
         if let Some(id) = last_event_id {
-            req = req.header("last-event-id", id.to_string());
+            req = req.header("last-event-id", id);
         }
         let res = app
             .clone()
@@ -75,11 +92,13 @@ impl Stream {
                     let raw: String = self.buf.drain(..end + 2).collect();
                     let (mut event, mut id, mut data) =
                         (String::from("message"), None, String::new());
+                    let mut id_text = None;
                     for line in raw.lines() {
                         if let Some(v) = line.strip_prefix("event:") {
                             event = v.trim().into();
                         } else if let Some(v) = line.strip_prefix("id:") {
                             id = v.trim().parse().ok();
+                            id_text = Some(v.trim().to_owned());
                         } else if let Some(v) = line.strip_prefix("data:") {
                             data += v.trim_start();
                         }
@@ -90,6 +109,7 @@ impl Stream {
                     return Sse {
                         event,
                         id,
+                        id_text,
                         data: serde_json::from_str(&data).unwrap(),
                     };
                 }
@@ -375,4 +395,84 @@ async fn cors_admits_only_the_listed_origins() {
         .unwrap()
         .to_owned();
     assert!(exposed.contains("fold-epoch"), "{exposed}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_connection_carries_many_resources() {
+    let app = app();
+    send(&app, Method::PUT, "/prefs/a", Some(json!(1))).await;
+    // Each resource takes its own query, URL-encoded.
+    let mut s = Stream::open(
+        &app,
+        "/_live?prefs=limit%3D10%26order%3Ddesc&motd=&tags=",
+        None,
+    )
+    .await
+    .unwrap();
+    let mut firsts = Vec::new();
+    for _ in 0..3 {
+        let e = s.next().await;
+        assert!(e.event.ends_with(".snapshot"), "{e:?}");
+        firsts.push(e.event);
+    }
+    firsts.sort();
+    assert_eq!(firsts, ["motd.snapshot", "prefs.snapshot", "tags.snapshot"]);
+
+    let put = send(&app, Method::PUT, "/motd", Some(json!("hi"))).await;
+    let e = s.next().await;
+    assert_eq!(e.event, "motd.change");
+    assert_eq!(
+        e.data,
+        json!({"epoch": put.epoch(), "changes": [{"value": "hi", "diff": 1}]})
+    );
+    let id = e.id_text.clone().unwrap();
+    let parts: Vec<u64> = id.split('.').map(|p| p.parse().unwrap()).collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "one epoch per resource, in request order: {id}"
+    );
+    assert_eq!(parts[1], put.epoch(), "motd's position carries its epoch");
+
+    // Resume all three exactly from that id: only what came after.
+    drop(s);
+    let keeper = Stream::open(
+        &app,
+        "/_live?prefs=limit%3D10%26order%3Ddesc&motd=&tags=",
+        None,
+    )
+    .await
+    .unwrap();
+    let tag = send(&app, Method::PUT, "/tags/x", None).await;
+    let mut s = Stream::open_with_id(
+        &app,
+        "/_live?prefs=limit%3D10%26order%3Ddesc&motd=&tags=",
+        &id,
+    )
+    .await
+    .unwrap();
+    let e = s.next().await;
+    assert_eq!(
+        (e.event.as_str(), e.data["epoch"].as_u64()),
+        ("tags.change", Some(tag.epoch()))
+    );
+    drop(keeper);
+}
+
+#[tokio::test]
+async fn a_multiplexed_stream_refuses_what_it_cant_carry() {
+    let app = app();
+    for (query, status) in [
+        ("", StatusCode::BAD_REQUEST),
+        ("nope=", StatusCode::BAD_REQUEST),
+        ("prefs=&prefs=", StatusCode::BAD_REQUEST),
+        ("names=", StatusCode::NOT_ACCEPTABLE),
+        ("prefs=limit%3D0", StatusCode::BAD_REQUEST),
+    ] {
+        let err = Stream::open(&app, &format!("/_live?{query}"), None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.0, status, "{query}: {:?}", err.1);
+    }
 }

@@ -562,6 +562,34 @@
         ]
       }
     },
+    "/_live": {
+      "get": {
+        "description": "Server-Sent Events. Each query parameter names a resource that streams and carries, URL-encoded, the query its own stream would take: `?messages=order%3Ddesc%26limit%3D50&total=`. Events are `<resource>.snapshot` and `<resource>.change`, with the data of the resource's own stream; each `id` lists every resource's epoch, dot-separated in request order, for `Last-Event-ID`. At most 32 resources. Browsers allow six HTTP/1.1 connections per host, and every open stream holds one: follow many resources here, not one stream each.",
+        "operationId": "live",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "An event stream."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          }
+        },
+        "summary": "Follow several resources on one connection",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
     "/_schema": {
       "get": {
         "operationId": "schema",

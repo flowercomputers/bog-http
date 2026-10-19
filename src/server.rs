@@ -14,6 +14,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter, get, post};
 use fold::{Db, Reader, Tx, Writer};
+use futures_util::StreamExt;
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Serialize;
@@ -26,7 +27,7 @@ use crate::live::{Change, Hubs};
 use crate::openapi::{self, Info};
 use crate::resource::{Call, Describe, Entry, Method, Route, Written};
 use crate::tx::{self, TxOp};
-use crate::wire::{parse_body, require_json, respond, to_json};
+use crate::wire::{parse_body, parse_query, require_json, respond, to_json};
 use crate::{IntoProblem, Problem, Serve};
 
 /// The request header naming the least epoch a read must reflect.
@@ -362,6 +363,14 @@ impl<S: Serve> Server<S> {
                 get(|State(st): St<S>| async move { axum::Json(st.openapi.clone()) }),
             )
             .route(
+                "/_live",
+                get(
+                    |State(st): St<S>, RawQuery(query): RawQuery, headers: HeaderMap| async move {
+                        multiplex(st, query, headers).await
+                    },
+                ),
+            )
+            .route(
                 "/_tx",
                 post(
                     |State(st): St<S>, headers: HeaderMap, body: Bytes| async move {
@@ -622,37 +631,160 @@ async fn stream<S: Serve>(
     if let Err(problem) = reach_min_epoch(&st, headers).await {
         return problem.into_response();
     }
-    let resume = headers
+    let resume = last_event_id(headers).and_then(|id| id.parse::<u64>().ok());
+    let items = match feed(st, i, call, resume).await {
+        Ok(items) => items,
+        Err(problem) => return problem.into_response(),
+    };
+    let events = items.map(|item| {
+        Ok::<_, std::convert::Infallible>(
+            Event::default()
+                .event(item.kind)
+                .id(item.epoch.to_string())
+                .data(item.data),
+        )
+    });
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// The most resources one `/_live` stream may carry.
+pub const MAX_LIVE: usize = 32;
+
+/// `GET /_live?a=<a's query>&b=<b's query>`: several resources' streams on
+/// one connection. Browsers allow six HTTP/1.1 connections per host, and
+/// each stream holds one for good: a page following three resources in
+/// two tabs would leave nothing for its other requests.
+///
+/// Each query parameter names a resource and carries, URL-encoded, the
+/// query its own stream would take (`messages=order%3Ddesc%26limit%3D50`).
+/// Events are named `<resource>.snapshot` and `<resource>.change`, with
+/// the same data as on the resource's own stream. The `id` is every
+/// resource's epoch, dot-separated in request order, so `Last-Event-ID`
+/// resumes each one exactly.
+async fn multiplex<S: Serve>(
+    st: Arc<Shared<S>>,
+    query: Option<String>,
+    headers: HeaderMap,
+) -> Response {
+    let wanted: Vec<(String, String)> = match parse_query(query.as_deref()) {
+        Ok(w) => w,
+        Err(problem) => return problem.into_response(),
+    };
+    if wanted.is_empty() || wanted.len() > MAX_LIVE {
+        return Problem::bad_request(format!(
+            "name 1 to {MAX_LIVE} resources to follow, as ?<resource>=<its query>"
+        ))
+        .into_response();
+    }
+    let mut picked = Vec::with_capacity(wanted.len());
+    for (name, query) in &wanted {
+        let Some((i, d)) = st
+            .described
+            .iter()
+            .enumerate()
+            .find(|(_, d)| &d.name == name)
+        else {
+            return Problem::bad_request(format!("no resource {name:?}")).into_response();
+        };
+        let Some(route) = d.routes.iter().find(|r| r.live && r.path.is_empty()) else {
+            return Problem::not_acceptable(format!("{name} doesn't stream")).into_response();
+        };
+        if picked.iter().any(|(j, _, _): &(usize, _, _)| *j == i) {
+            return Problem::bad_request(format!("{name} named twice")).into_response();
+        }
+        let call = Call {
+            op: route.op,
+            key: None,
+            query: (!query.is_empty()).then(|| query.clone()),
+            body: Bytes::new(),
+        };
+        picked.push((i, name.clone(), call));
+    }
+    if let Err(problem) = reach_min_epoch(&st, &headers).await {
+        return problem.into_response();
+    }
+    // `e1.e2.…`, one per resource; anything else resumes nothing.
+    let resume: Vec<Option<u64>> = last_event_id(&headers)
+        .map(|id| id.split('.').map(|e| e.parse().ok()).collect())
+        .filter(|ids: &Vec<Option<u64>>| ids.len() == picked.len())
+        .unwrap_or_else(|| vec![None; picked.len()]);
+
+    let mut feeds = Vec::with_capacity(picked.len());
+    for (k, ((i, name, call), resume)) in picked.into_iter().zip(resume).enumerate() {
+        match feed(st.clone(), i, call, resume).await {
+            Ok(items) => feeds.push(Box::pin(items.map(move |item| (k, name.clone(), item)))),
+            Err(problem) => return problem.into_response(),
+        }
+    }
+    let mut epochs = vec![0u64; feeds.len()];
+    let events = futures_util::stream::select_all(feeds).map(move |(k, name, item)| {
+        epochs[k] = item.epoch;
+        let id = epochs
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        Ok::<_, std::convert::Infallible>(
+            Event::default()
+                .event(format!("{name}.{}", item.kind))
+                .id(id)
+                .data(item.data),
+        )
+    });
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+fn last_event_id(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok());
-    let joined = st.hubs.join(i, resume, || {
-        let snap = st.reader.snapshot();
-        let facades = st.reader.at(&snap);
-        (st.entries[i].live)(&facades).map(|live| (snap.frontier().outer, live))
-    });
-    let Some(joined) = joined else {
-        return Problem::not_acceptable("this resource doesn't stream").into_response();
-    };
+        .map(str::trim)
+}
+
+/// One event of a resource's feed, before it's framed.
+struct Item {
+    kind: &'static str,
+    epoch: u64,
+    data: String,
+}
+
+/// Resource `i`'s feed for one client: a snapshot (or a replay from
+/// `resume`), then every later change, resyncing with a snapshot if the
+/// client falls behind; ends when the server closes or the database does.
+async fn feed<S: Serve>(
+    st: Arc<Shared<S>>,
+    i: usize,
+    call: Call,
+    resume: Option<u64>,
+) -> Result<impl futures_util::Stream<Item = Item> + Send + 'static, Problem> {
+    let joined = st
+        .hubs
+        .join(i, resume, || {
+            let snap = st.reader.snapshot();
+            let facades = st.reader.at(&snap);
+            (st.entries[i].live)(&facades).map(|live| (snap.frontier().outer, live))
+        })
+        .ok_or_else(|| Problem::not_acceptable("this resource doesn't stream"))?;
 
     let mut queue = VecDeque::new();
     let floor = match (joined.replay, resume) {
         (Some(replay), Some(from)) => {
             let floor = replay.last().map_or(from, |c| c.epoch);
-            queue.extend(replay.iter().map(|c| change_event(c)));
+            queue.extend(replay.iter().map(|c| change_item(c)));
             floor
         }
         _ => {
             // Subscribed already: take the snapshot now, and the tail
             // above its epoch is exactly what it lacks. A malformed query
             // fails here, as a plain problem rather than a stream.
-            match snapshot_event(&st, i, &call).await {
-                Ok((epoch, event)) => {
-                    queue.push_back(event);
-                    epoch
-                }
-                Err(problem) => return problem.into_response(),
-            }
+            let item = snapshot_item(&st, i, &call).await?;
+            let floor = item.epoch;
+            queue.push_back(item);
+            floor
         }
     };
 
@@ -666,10 +798,10 @@ async fn stream<S: Serve>(
         queue,
         closing,
     };
-    let events = futures_util::stream::unfold(feed, |mut f| async move {
+    Ok(futures_util::stream::unfold(feed, |mut f| async move {
         loop {
-            if let Some(event) = f.queue.pop_front() {
-                return Some((Ok::<_, std::convert::Infallible>(event), f));
+            if let Some(item) = f.queue.pop_front() {
+                return Some((item, f));
             }
             let next = tokio::select! {
                 next = f.rx.recv() => next,
@@ -678,14 +810,14 @@ async fn stream<S: Serve>(
             match next {
                 Ok(change) if change.epoch > f.floor => {
                     f.floor = change.epoch;
-                    f.queue.push_back(change_event(&change));
+                    f.queue.push_back(change_item(&change));
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    match snapshot_event(&f.st, f.i, &f.call).await {
-                        Ok((epoch, event)) => {
-                            f.floor = epoch;
-                            f.queue.push_back(event);
+                    match snapshot_item(&f.st, f.i, &f.call).await {
+                        Ok(item) => {
+                            f.floor = item.epoch;
+                            f.queue.push_back(item);
                         }
                         Err(_) => return None,
                     }
@@ -694,10 +826,7 @@ async fn stream<S: Serve>(
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
-    });
-    Sse::new(events)
-        .keep_alive(KeepAlive::default())
-        .into_response()
+    }))
 }
 
 struct Feed<S: Serve> {
@@ -708,32 +837,30 @@ struct Feed<S: Serve> {
     /// The newest epoch this client has: changes at or below it are
     /// already in what it was sent.
     floor: u64,
-    queue: VecDeque<Event>,
+    queue: VecDeque<Item>,
     closing: watch::Receiver<bool>,
 }
 
-async fn snapshot_event<S: Serve>(
+async fn snapshot_item<S: Serve>(
     st: &Arc<Shared<S>>,
     i: usize,
     call: &Call,
-) -> Result<(u64, Event), Problem> {
+) -> Result<Item, Problem> {
     let call = call.clone();
     let (epoch, data) = snapshot(st.clone(), move |st, r| (st.entries[i].read)(r, &call)).await?;
-    let body = json!({ "epoch": epoch, "data": data }).to_string();
-    Ok((
+    Ok(Item {
+        kind: "snapshot",
         epoch,
-        Event::default()
-            .event("snapshot")
-            .id(epoch.to_string())
-            .data(body),
-    ))
+        data: json!({ "epoch": epoch, "data": data }).to_string(),
+    })
 }
 
-fn change_event(change: &Change) -> Event {
-    Event::default()
-        .event("change")
-        .id(change.epoch.to_string())
-        .data(&change.data)
+fn change_item(change: &Change) -> Item {
+    Item {
+        kind: "change",
+        epoch: change.epoch,
+        data: change.data.clone(),
+    }
 }
 
 /// Wait, bounded, until the store's frontier reaches the request's
