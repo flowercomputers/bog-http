@@ -21,6 +21,11 @@ That's `GET /messages` (keyset-paginated), `GET /messages/{id}`,
 multi-source writes, and `GET /openapi.json`. Every listing also streams
 over Server-Sent Events: a snapshot, then each commit's changes.
 
+For a local app: `serve_unix` (owner-only socket) or a loopback port,
+`discovery(path)` so the app finds a running server or starts one,
+`idle_exit` so an on-demand server leaves when unused, and
+`bearer_token` to keep other local processes and web pages out.
+
 Try it with the gallery's chat:
 
 ```sh

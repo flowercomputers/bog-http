@@ -1,6 +1,6 @@
 # fold-http — design draft
 
-Status: milestones 1–4 landed, plus the local-serving part of 5 (see "Progress" at the end). Written 2026-10-19 after surveying fold2
+Status: milestones 1–5 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
 
 ## The goal behind the goal
@@ -348,3 +348,34 @@ operator's state and also replaying into it.
 
 Still open from 5: auth, Unix sockets, idle-exit daemon mode, fingerprint
 drift as a clean error, readiness beyond liveness, tracing/metrics.
+
+### Milestone 5 — done (2026-10-19)
+
+- Access control: `bearer_token` on every route but `/_health`, with
+  `?access_token=` for `EventSource` (stripped before routing, compared
+  in constant time); `allowed_hosts`, applied automatically to loopback
+  binds by `serve`, refuses foreign `Host` headers (DNS rebinding).
+  OpenAPI documents the scheme and the 401s.
+- `serve_unix`: owner-only (`0600`) sockets, a stale socket replaced, a
+  live one never taken over (`AddrInUse`), removed on exit.
+- Spawn-or-connect for local apps: `discovery(path)` writes
+  `{pid, url | socket, auth, title}` atomically once listening and
+  removes it on exit (only if still ours); `idle_exit(d)` shuts down once
+  no request has arrived for `d` and no stream is open.
+- `/_health`: `{status, epoch, streams, pending_writes}`. `tracing`
+  events (target `fold_http`) for serving, commits, refusals, overload,
+  hubs starting and stopping, and stream resyncs.
+- Tests over real sockets: discovery + Host check + idle exit on TCP;
+  Unix socket mode, takeover refusal, cleanup, stale-socket replacement;
+  an open stream holding off idle exit.
+
+Not done, and why:
+
+- Schema-drift detection beyond fold2's own: fold2 rebuilds derived
+  state when the graph changes, and a changed *row type* panics in its
+  codec at open. A clean error for the latter belongs in fold2 (a type
+  fingerprint per keyspace).
+- Metrics: `tracing` events are the hook; a Prometheus endpoint is an
+  application's choice of exporter.
+- HTTP/2: browsers only use it with TLS. Until then a page should follow
+  everything through one `/_live` stream (six connections per host).

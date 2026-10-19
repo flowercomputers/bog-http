@@ -82,10 +82,24 @@
 //! stream holds one for good.
 //!
 //! # Serving
-//! [`Server::serve`] binds, serves until ctrl-c or SIGTERM, ends live
-//! streams, drains requests, and checkpoints. [`cors`] admits a browser
-//! app on other origins, listed explicitly. For anything else,
-//! [`Server::into_router`] is a plain axum [`Router`](axum::Router).
+//! [`Server::serve`] (TCP) and [`Server::serve_unix`] bind, serve until
+//! ctrl-c, SIGTERM, or [`Server::idle_exit`], end live streams, drain
+//! requests, and checkpoint. For a local app on the same machine:
+//!
+//! - [`Server::discovery`] keeps a JSON file saying where the server is
+//!   (`url` or `socket`, `pid`), so an app can connect to a running one
+//!   or start its own; a second server on the same store fails cleanly
+//!   (fold2 allows one writer).
+//! - [`Server::idle_exit`] lets an on-demand server leave once unused.
+//! - A loopback bind answers only to `localhost` names (DNS rebinding);
+//!   [`Server::bearer_token`] keeps out other local processes and pages,
+//!   and Unix sockets are created owner-only.
+//! - [`cors`] admits a browser app on other origins, listed explicitly.
+//!
+//! `GET /_health` reports the epoch, open streams, and pending writes.
+//! Events go to [`tracing`](https://docs.rs/tracing) under the
+//! `fold_http` target. For anything else, [`Server::into_router`] is a
+//! plain axum [`Router`](axum::Router).
 //!
 //! # Serving your own kinds
 //! A source or view type from outside fold serves by implementing
@@ -100,6 +114,8 @@ mod openapi;
 mod problem;
 mod resource;
 mod resources;
+#[cfg(feature = "serve")]
+mod serve;
 mod server;
 mod tx;
 pub mod wire;

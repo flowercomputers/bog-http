@@ -44,17 +44,77 @@ pub const MIN_EPOCH_HEADER: &str = "fold-min-epoch";
 ///
 /// [`into_router`]: Server::into_router
 pub struct Server<S: Serve> {
-    reader: Reader<S>,
-    writer: Writer<S>,
-    title: String,
-    version: String,
-    description: Option<String>,
-    custom: Vec<Custom<S>>,
-    min_epoch_wait: Duration,
-    max_pending_writes: usize,
-    body_limit: usize,
-    closing: watch::Sender<bool>,
-    guard: Guard,
+    pub(crate) reader: Reader<S>,
+    pub(crate) writer: Writer<S>,
+    pub(crate) title: String,
+    pub(crate) version: String,
+    pub(crate) description: Option<String>,
+    pub(crate) custom: Vec<Custom<S>>,
+    pub(crate) min_epoch_wait: Duration,
+    pub(crate) max_pending_writes: usize,
+    pub(crate) body_limit: usize,
+    pub(crate) closing: watch::Sender<bool>,
+    pub(crate) guard: Guard,
+    pub(crate) activity: Arc<Activity>,
+    #[cfg_attr(not(feature = "serve"), allow(dead_code))]
+    pub(crate) idle_exit: Option<Duration>,
+    #[cfg_attr(not(feature = "serve"), allow(dead_code))]
+    pub(crate) discovery: Option<std::path::PathBuf>,
+}
+
+/// When the server last heard a request, and how many streams are open:
+/// what [`Server::idle_exit`] watches.
+pub(crate) struct Activity {
+    start: std::time::Instant,
+    /// Milliseconds after `start`.
+    last: std::sync::atomic::AtomicU64,
+    pub(crate) streams: std::sync::atomic::AtomicUsize,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Activity {
+            start: std::time::Instant::now(),
+            last: 0.into(),
+            streams: 0.into(),
+        }
+    }
+
+    fn stamp(&self) {
+        let now = self.start.elapsed().as_millis() as u64;
+        self.last
+            .fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How long since the last request began, if no stream is open.
+    #[cfg_attr(not(feature = "serve"), allow(dead_code))]
+    pub(crate) fn idle(&self) -> Option<Duration> {
+        if self.streams.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+            return None;
+        }
+        let last = Duration::from_millis(self.last.load(std::sync::atomic::Ordering::Relaxed));
+        Some(self.start.elapsed().saturating_sub(last))
+    }
+}
+
+/// Counts an open stream for as long as it lives.
+struct Open(Arc<Activity>);
+
+impl Open {
+    fn new(activity: &Arc<Activity>) -> Self {
+        activity
+            .streams
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Open(activity.clone())
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0
+            .streams
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Ends a server's live streams, so a graceful shutdown can finish:
@@ -81,11 +141,13 @@ struct Shared<S: Serve> {
     schema: Value,
     /// Admission control: one permit per write in flight.
     permits: Arc<Semaphore>,
+    max_pending_writes: usize,
     /// The newest epoch a write through this server committed.
     committed: watch::Sender<u64>,
     min_epoch_wait: Duration,
     hubs: Arc<Hubs>,
     closing: watch::Sender<bool>,
+    activity: Arc<Activity>,
 }
 
 type St<S> = State<Arc<Shared<S>>>;
@@ -118,6 +180,9 @@ impl<S: Serve> Server<S> {
             body_limit: 2 << 20,
             closing: watch::Sender::new(false),
             guard: Guard::default(),
+            activity: Arc::new(Activity::new()),
+            idle_exit: None,
+            discovery: None,
         }
     }
 
@@ -249,39 +314,6 @@ impl<S: Serve> Server<S> {
         self
     }
 
-    /// Serve on `addr` until ctrl-c or SIGTERM, then shut down
-    /// gracefully: end live streams, finish in-flight requests, and
-    /// checkpoint, so the next open replays no WAL.
-    ///
-    /// `layer` wraps the router first: CORS, auth, tracing, extra
-    /// routes. Bind `127.0.0.1` unless the API is meant for the network;
-    /// fold-http has no authentication of its own.
-    #[cfg(feature = "serve")]
-    pub async fn serve(
-        self,
-        addr: impl tokio::net::ToSocketAddrs,
-        layer: impl FnOnce(Router) -> Router,
-    ) -> std::io::Result<()> {
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        let mut this = self;
-        if this.guard.hosts.is_none() && listener.local_addr()?.ip().is_loopback() {
-            this.guard.hosts = Some(crate::guard::loopback_hosts().into());
-        }
-        let this = this;
-        let writer = this.writer.clone();
-        let closer = this.closer();
-        let app = layer(this.into_router());
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                stop_signal().await;
-                closer.close();
-            })
-            .await?;
-        tokio::task::spawn_blocking(move || writer.checkpoint())
-            .await
-            .map_err(std::io::Error::other)?
-    }
-
     /// The OpenAPI document this server will serve, without serving it.
     pub fn openapi(&self) -> Value {
         let entries = S::entries();
@@ -313,6 +345,7 @@ impl<S: Serve> Server<S> {
         let committed = watch::Sender::new(self.reader.snapshot().frontier().outer);
         let body_limit = self.body_limit;
         let guard = self.guard.clone();
+        let activity = self.activity.clone();
         let shared = Arc::new(Shared {
             reader: self.reader,
             writer: self.writer,
@@ -323,10 +356,12 @@ impl<S: Serve> Server<S> {
             openapi,
             schema,
             permits: Arc::new(Semaphore::new(self.max_pending_writes)),
+            max_pending_writes: self.max_pending_writes,
             committed,
             min_epoch_wait: self.min_epoch_wait,
             hubs: Arc::default(),
             closing: self.closing,
+            activity: self.activity.clone(),
         });
 
         let mut mounted = Mounted::default();
@@ -391,7 +426,7 @@ impl<S: Serve> Server<S> {
             )
             .route(
                 "/_health",
-                get(|| async { axum::Json(json!({ "status": "ok" })) }),
+                get(|State(st): St<S>| async move { health(&st) }),
             )
             .route(
                 "/openapi.json",
@@ -422,6 +457,12 @@ impl<S: Serve> Server<S> {
             })
             .layer(DefaultBodyLimit::max(body_limit))
             .layer(axum::middleware::map_response(problem_status))
+            .layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    activity.stamp();
+                    next.run(req)
+                },
+            ))
             .with_state(shared);
         if guard.is_open() {
             router
@@ -467,6 +508,17 @@ impl<S: Serve> Mounted<S> {
         };
         *router = on(std::mem::take(router), filter);
     }
+}
+
+/// Liveness, and what an operator wants at a glance: the store's
+/// epoch, open streams, writes in flight.
+fn health<S: Serve>(st: &Shared<S>) -> axum::Json<Value> {
+    axum::Json(json!({
+        "status": "ok",
+        "epoch": st.reader.snapshot().frontier().outer,
+        "streams": st.activity.streams.load(std::sync::atomic::Ordering::Relaxed),
+        "pending_writes": st.max_pending_writes - st.permits.available_permits(),
+    }))
 }
 
 /// Every entry's and custom route's description, sharing one set of
@@ -832,6 +884,7 @@ async fn feed<S: Serve>(
     };
 
     let closing = st.closing.subscribe();
+    let open = Open::new(&st.activity);
     let feed = Feed {
         st,
         i,
@@ -840,6 +893,7 @@ async fn feed<S: Serve>(
         floor,
         queue,
         closing,
+        _open: open,
     };
     Ok(futures_util::stream::unfold(feed, |mut f| async move {
         loop {
@@ -856,7 +910,8 @@ async fn feed<S: Serve>(
                     f.queue.push_back(change_item(&change));
                 }
                 Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => {
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::debug!(target: "fold_http", resource = %f.st.described[f.i].name, missed, "stream fell behind: resyncing");
                     match snapshot_item(&f.st, f.i, &f.call).await {
                         Ok(item) => {
                             f.floor = item.epoch;
@@ -882,6 +937,7 @@ struct Feed<S: Serve> {
     floor: u64,
     queue: VecDeque<Item>,
     closing: watch::Receiver<bool>,
+    _open: Open,
 }
 
 async fn snapshot_item<S: Serve>(
@@ -942,6 +998,7 @@ async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Resul
 /// Run one transaction on the writer thread, under admission control.
 async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, Written), Problem> {
     let Ok(permit) = st.permits.clone().try_acquire_owned() else {
+        tracing::warn!(target: "fold_http", "write refused: too many pending");
         return Err(Problem::overloaded());
     };
     let writer = st.writer.clone();
@@ -957,6 +1014,7 @@ async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, W
     .await;
     match res {
         Ok(Ok((epoch, written))) => {
+            tracing::debug!(target: "fold_http", epoch, "committed");
             st.committed.send_if_modified(|newest| {
                 let advanced = epoch > *newest;
                 if advanced {
@@ -966,7 +1024,11 @@ async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, W
             });
             Ok((epoch, written))
         }
-        Ok(Err(e)) => Err(e.into_problem()),
+        Ok(Err(e)) => {
+            let problem = e.into_problem();
+            tracing::debug!(target: "fold_http", status = problem.status, at = problem.at.as_deref(), "write refused");
+            Err(problem)
+        }
         // `Writer` panics only when the database thread is gone.
         Err(e) if e.is_panic() => Err(Problem::unavailable("the database writer has stopped")),
         Err(e) => Err(Problem::internal(format!("write failed: {e}"))),
@@ -1011,27 +1073,4 @@ async fn problem_status(res: Response) -> Response {
         out.headers_mut().insert(header::ALLOW, allow);
     }
     out
-}
-
-/// Ctrl-c, or SIGTERM where there is one.
-#[cfg(feature = "serve")]
-async fn stop_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let term = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut s) => {
-                s.recv().await;
-            }
-            Err(_) => std::future::pending().await,
-        }
-    };
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = term => {}
-    }
 }

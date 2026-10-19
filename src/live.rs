@@ -94,6 +94,7 @@ impl Hubs {
                     .spawn(move || run(hubs_, i, hub_, live))
                     .expect("spawn a hub thread");
                 hubs.insert(i, hub.clone());
+                tracing::debug!(target: "fold_http", resource = i, since, "hub started");
                 hub
             }
         };
@@ -161,6 +162,7 @@ fn stop(hubs: &Hubs, i: usize, hub: &Arc<Hub>, always: bool) -> bool {
     }
     if map.get(&i).is_some_and(|h| Arc::ptr_eq(h, hub)) {
         map.remove(&i);
+        tracing::debug!(target: "fold_http", resource = i, "hub stopped");
     }
     true
 }

@@ -37,6 +37,7 @@ impl Guard {
 }
 
 /// The host names a loopback-bound server answers to by default.
+#[cfg(any(feature = "serve", test))]
 pub(crate) fn loopback_hosts() -> Vec<String> {
     ["localhost", "127.0.0.1", "[::1]", "::1"]
         .iter()
