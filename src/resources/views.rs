@@ -9,8 +9,8 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{answer_keyed, get_route, list_keyed, list_route};
-use crate::resource::{Call, Describe, Resource, Route, schema_in};
+use super::{answer_keyed, get_route, keyed_change, list_keyed, list_route, value_change};
+use crate::resource::{Call, Describe, Live, Resource, Route, schema_in};
 use crate::wire::{
     Counted, DEFAULT_LIMIT, GroupRow, ListParams, Order, Page, Row, arranged, decode_cursor, limit,
     paginate, parse_key, to_json,
@@ -33,6 +33,10 @@ impl<K: Data + Wire, V: Data + Wire> Resource for MapView<K, V> {
 
     fn answer(facade: &MapRead<K, V>, call: &Call) -> Result<Value, Problem> {
         answer_keyed(facade, call)
+    }
+
+    fn live(facade: &MapRead<K, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), keyed_change))
     }
 }
 
@@ -78,9 +82,14 @@ impl<K: Data + Wire, V: Data + Wire> Resource for OrderedView<K, V> {
             .route(
                 Route::get("", "list", "List rows by key, or by value with `by=value`")
                     .query::<OrderedParams>()
-                    .response::<Page<Row<K, V>>>(g),
+                    .response::<Page<Row<K, V>>>(g)
+                    .live(),
             )
             .route(get_route::<K, V>(g))
+    }
+
+    fn live(facade: &OrderedRead<K, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), keyed_change))
     }
 
     fn answer(facade: &OrderedRead<K, V>, call: &Call) -> Result<Value, Problem> {
@@ -139,7 +148,8 @@ impl<K: Data + Wire, V: Data + Wire> Resource for GroupView<K, V> {
             .route(
                 Route::get("", "list", "List every (key, value) pair, with counts")
                     .query::<ListParams>()
-                    .response::<Page<GroupRow<K, V>>>(g),
+                    .response::<Page<GroupRow<K, V>>>(g)
+                    .live(),
             )
             .route(
                 Route::get("/{key}", "values", "List a key's values, with counts")
@@ -147,6 +157,10 @@ impl<K: Data + Wire, V: Data + Wire> Resource for GroupView<K, V> {
                     .query::<ListParams>()
                     .response::<Page<Counted<V>>>(g),
             )
+    }
+
+    fn live(facade: &GroupRead<K, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), keyed_change))
     }
 
     fn answer(facade: &GroupRead<K, V>, call: &Call) -> Result<Value, Problem> {
@@ -198,8 +212,15 @@ impl<V: Data + Wire> Resource for ValueView<V> {
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
         Describe::new(name, "value_view", schema_in::<V>(g)).route(
             Route::get("", "get", "Get the value: `null` until the view has one")
-                .response::<Option<V>>(g),
+                .response::<Option<V>>(g)
+                .live(),
         )
+    }
+
+    fn live(facade: &ValueRead<V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), |((), v), d| {
+            value_change(v, d)
+        }))
     }
 
     fn answer(facade: &ValueRead<V>, call: &Call) -> Result<Value, Problem> {

@@ -7,10 +7,11 @@
 //! document, so the three can't drift apart.
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use axum::body::Bytes;
 use fold::schema::Error;
-use fold::{Declare, SourceDecl, WriteOf};
+use fold::{Closed, Declare, Diff, SourceDecl, Subscription, WriteOf};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -81,6 +82,10 @@ pub struct Route {
     pub creates: bool,
     /// May answer `404`.
     pub may_404: bool,
+    /// Also streams: with `Accept: text/event-stream` this `GET` answers
+    /// with its usual data as a `snapshot` event, then a `change` event
+    /// per commit (see [`Resource::live`]).
+    pub live: bool,
 }
 
 impl Route {
@@ -101,6 +106,7 @@ impl Route {
             response: Value::Bool(true),
             creates: false,
             may_404: false,
+            live: false,
         }
     }
 
@@ -165,6 +171,12 @@ impl Route {
 
     pub fn may_404(mut self) -> Self {
         self.may_404 = true;
+        self
+    }
+
+    /// Mark a `GET` as streamable; see [`Route::live`](Route#structfield.live).
+    pub fn live(mut self) -> Self {
+        self.live = true;
         self
     }
 }
@@ -300,6 +312,43 @@ pub struct Mint<W, E> {
 /// The op of a [`Mint`] route.
 pub const MINT_OP: &str = "insert";
 
+/// A resource's change feed: a fold [`Subscription`] whose rows render
+/// as JSON. Each poll yields one commit's changes, consolidated, with the
+/// commit's outer epoch.
+///
+/// [`Subscription`]: fold::Subscription
+pub struct Live {
+    poll: Box<dyn FnMut(Duration) -> Result<Option<(u64, Vec<Value>)>, Closed> + Send>,
+}
+
+impl Live {
+    /// Render each `(row, diff)` of `sub` with `row`: a positive diff
+    /// arrives, a negative one retracts (an upsert is both).
+    pub fn new<T: Send + 'static>(
+        sub: Subscription<T>,
+        row: impl Fn(T, Diff) -> Value + Send + 'static,
+    ) -> Self {
+        Live {
+            poll: Box::new(move |wait| {
+                Ok(sub.recv_timeout(wait)?.map(|delta| {
+                    let rows = delta
+                        .rows
+                        .into_iter()
+                        .map(|(t, diff)| row(t, diff))
+                        .collect();
+                    (delta.outer, rows)
+                }))
+            }),
+        }
+    }
+
+    /// The next commit's `(outer epoch, changes)`, waiting up to `wait`;
+    /// `Err` once the database has closed.
+    pub fn poll(&mut self, wait: Duration) -> Result<Option<(u64, Vec<Value>)>, Closed> {
+        (self.poll)(wait)
+    }
+}
+
 /// A schema field servable over HTTP.
 pub trait Resource: 'static {
     /// The read facade this resource is served from: the field's type in
@@ -312,6 +361,13 @@ pub trait Resource: 'static {
 
     /// Answer a `GET` route from one snapshot's facade.
     fn answer(facade: &Self::Facade, call: &Call) -> Result<Value, Problem>;
+
+    /// The resource's change feed, subscribed at the facade's snapshot,
+    /// for its [`live`](Route::live) routes. `None`: not streamable.
+    fn live(facade: &Self::Facade) -> Option<Live> {
+        let _ = facade;
+        None
+    }
 }
 
 /// A source field: also writable.
@@ -327,6 +383,7 @@ type ReadFn<S> =
 type StageFn<S> =
     Box<dyn Fn(Call) -> Result<Apply<WriteOf<S>, <S as Declare>::Error>, Problem> + Send + Sync>;
 type DescribeFn = Box<dyn Fn(&str, &mut SchemaGenerator) -> Describe + Send + Sync>;
+type LiveFn<S> = Box<dyn Fn(&<S as fold::Schema>::Read) -> Option<Live> + Send + Sync>;
 
 /// One served field of schema `S`, type-erased. Built by
 /// `#[derive(Serve)]`; also the escape hatch for hand-written impls.
@@ -335,6 +392,7 @@ pub struct Entry<S: Declare> {
     pub(crate) description: Option<String>,
     pub(crate) describe: DescribeFn,
     pub(crate) read: ReadFn<S>,
+    pub(crate) live: LiveFn<S>,
     pub(crate) stage: Option<StageFn<S>>,
 }
 
@@ -346,6 +404,7 @@ impl<S: Serve> Entry<S> {
             description: None,
             describe: Box::new(D::describe),
             read: Box::new(move |r, call| D::answer(facade(r), call)),
+            live: Box::new(move |r| D::live(facade(r))),
             stage: None,
         }
     }
@@ -372,6 +431,7 @@ impl<S: Serve> Entry<S> {
                 }
             }),
             read: Box::new(move |r, call| D::answer(facade(r), call)),
+            live: Box::new(move |r| D::live(facade(r))),
             stage: Some(Box::new(move |call| {
                 let apply = match mint_stage {
                     Some(mint) if call.op == MINT_OP => mint(call)?,

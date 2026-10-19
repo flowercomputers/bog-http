@@ -93,6 +93,17 @@ impl Problem {
         )
     }
 
+    /// The client accepts only what this route can't produce (a stream
+    /// from a route that doesn't stream).
+    pub fn not_acceptable(detail: impl Into<String>) -> Self {
+        Problem::new(
+            StatusCode::NOT_ACCEPTABLE,
+            "not-acceptable",
+            "Not acceptable",
+        )
+        .with_detail(detail)
+    }
+
     pub fn unsupported_media_type() -> Self {
         Problem::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,

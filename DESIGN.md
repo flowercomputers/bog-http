@@ -1,6 +1,6 @@
 # fold-http — design draft
 
-Status: milestones 1–3 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
+Status: milestones 1–4 landed, plus the local-serving part of 5 (see "Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
 
 ## The goal behind the goal
@@ -308,3 +308,43 @@ Decisions worth revisiting:
   (`"$0.key"`) would close the gap.
 - Custom routes have no path parameters yet.
 - Admission control counts writes, not their size.
+
+### Milestone 4 — done (2026-10-19), with the local half of 5
+
+Goal driving it: a live web API for a demo app (the gallery's chat) that
+a local app can read and write on-device.
+
+- Live feeds. `Accept: text/event-stream` on any listing or singleton
+  `GET`: a `snapshot` event (the plain `GET`'s answer), then a `change`
+  per commit, `id` = epoch. One hub per resource, started with its
+  first client and stopped (≤ 250 ms) after its last; it drains fold's
+  unbounded subscription on its own thread, serializes each commit once,
+  and broadcasts over a bounded channel (1024). Gapless by construction:
+  subscribe, then snapshot, then drop changes at or below the snapshot's
+  epoch. A lagging client gets a fresh snapshot. `Last-Event-ID`
+  replays from the hub's ring (1024) when nothing it missed was evicted,
+  else snapshots. Search views don't stream (`406`).
+- `Server::serve(addr, layer)`: bind, serve until ctrl-c / SIGTERM, end
+  live streams (`Closer`, so graceful shutdown can't hang on them),
+  drain, checkpoint. `fold_http::cors([...])`: explicit origins only.
+- `examples/chat`: the gallery's Chat schema, unchanged, served whole —
+  generated routes, a `/send` custom write stamping the clock, a `/find`
+  custom read with prefix completion — and a page that renders entirely
+  from `EventSource` streams. Verified in a browser: live push from
+  another client, sends from the page, search, graceful stop with open
+  streams (exits in ~0.5 s, WAL empty), restart, and the page
+  reconnecting on its own and receiving the next message live.
+- Tests: SSE ordering and epochs, per-commit grouping, singletons,
+  resume, resume-too-old, lag → resync (1124 commits unread), 406,
+  closing ends streams, CORS allowlist; hub lifecycle unit test.
+
+Found by the acceptance test, **a fold2 bug, not fold-http's**: opening
+the gallery's `data/chat` (written by the gallery's build) and writing
+once takes `total` from 7 to 15 while `messages` goes 7 → 8. Reproduced
+with fold alone and with the gallery binary itself on current fold2; a
+store reopened by the binary that wrote it is fine. It looks like the
+replay-on-fingerprint-change path in `Database::boot` restoring a count
+operator's state and also replaying into it.
+
+Still open from 5: auth, Unix sockets, idle-exit daemon mode, fingerprint
+drift as a clean error, readiness beyond liveness, tracing/metrics.

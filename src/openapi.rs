@@ -86,6 +86,7 @@ pub(crate) fn document(
                 "Rejected": problem("A schema constraint refused the write; `at` names the source or view that refused. Nothing was applied."),
                 "Unavailable": problem("Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."),
                 "PayloadTooLarge": problem("The body exceeds the server's limit."),
+                "NotAcceptable": problem("A stream was asked of a route that doesn't stream."),
             },
             "parameters": {
                 "MinEpoch": {
@@ -144,7 +145,24 @@ fn operation(id: &str, tag: &str, description: Option<&str>, r: &Route) -> Value
     }
 
     let mut responses = Map::new();
-    let ok = success(&r.response);
+    let mut ok = success(&r.response);
+    if r.live {
+        ok["content"]["text/event-stream"] = json!({
+            "schema": {
+                "type": "string",
+                "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+            },
+        });
+        if let Some(Value::Array(params)) = op.get_mut("parameters") {
+            params.push(json!({
+                "name": "Last-Event-ID",
+                "in": "header",
+                "required": false,
+                "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+                "schema": { "type": "integer", "format": "uint64", "minimum": 0 },
+            }));
+        }
+    }
     if r.creates {
         responses.insert("201".into(), ok.clone());
     }
@@ -161,6 +179,9 @@ fn operation(id: &str, tag: &str, description: Option<&str>, r: &Route) -> Value
     refer("400", "BadRequest");
     if r.may_404 {
         refer("404", "NotFound");
+    }
+    if r.method.is_read() {
+        refer("406", "NotAcceptable");
     }
     if r.body.is_some() {
         refer("413", "PayloadTooLarge");

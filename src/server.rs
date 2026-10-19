@@ -1,7 +1,7 @@
 //! [`Server`]: a schema's resources mounted on an axum [`Router`].
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as Slot;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +10,7 @@ use axum::body::Bytes;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter, get, post};
 use fold::{Db, Reader, Tx, Writer};
@@ -18,9 +19,10 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::{Semaphore, broadcast, watch};
 
 use crate::custom::{CUSTOM_OP, Custom, Handler, TxFn, check_path};
+use crate::live::{Change, Hubs};
 use crate::openapi::{self, Info};
 use crate::resource::{Call, Describe, Entry, Method, Route, Written};
 use crate::tx::{self, TxOp};
@@ -49,6 +51,20 @@ pub struct Server<S: Serve> {
     min_epoch_wait: Duration,
     max_pending_writes: usize,
     body_limit: usize,
+    closing: watch::Sender<bool>,
+}
+
+/// Ends a server's live streams, so a graceful shutdown can finish:
+/// open event streams otherwise never complete. [`Server::serve`] uses
+/// it on ctrl-c / SIGTERM; an application serving the router itself
+/// triggers it when it starts shutting down.
+#[derive(Clone)]
+pub struct Closer(watch::Sender<bool>);
+
+impl Closer {
+    pub fn close(&self) {
+        self.0.send_replace(true);
+    }
 }
 
 struct Shared<S: Serve> {
@@ -65,6 +81,8 @@ struct Shared<S: Serve> {
     /// The newest epoch a write through this server committed.
     committed: watch::Sender<u64>,
     min_epoch_wait: Duration,
+    hubs: Arc<Hubs>,
+    closing: watch::Sender<bool>,
 }
 
 type St<S> = State<Arc<Shared<S>>>;
@@ -95,7 +113,13 @@ impl<S: Serve> Server<S> {
             min_epoch_wait: Duration::from_secs(5),
             max_pending_writes: 1024,
             body_limit: 2 << 20,
+            closing: watch::Sender::new(false),
         }
+    }
+
+    /// A handle that ends this server's live streams; see [`Closer`].
+    pub fn closer(&self) -> Closer {
+        Closer(self.closing.clone())
     }
 
     /// The OpenAPI `info.title`; the schema's type name by default.
@@ -196,6 +220,34 @@ impl<S: Serve> Server<S> {
         self
     }
 
+    /// Serve on `addr` until ctrl-c or SIGTERM, then shut down
+    /// gracefully: end live streams, finish in-flight requests, and
+    /// checkpoint, so the next open replays no WAL.
+    ///
+    /// `layer` wraps the router first: CORS, auth, tracing, extra
+    /// routes. Bind `127.0.0.1` unless the API is meant for the network;
+    /// fold-http has no authentication of its own.
+    #[cfg(feature = "serve")]
+    pub async fn serve(
+        self,
+        addr: impl tokio::net::ToSocketAddrs,
+        layer: impl FnOnce(Router) -> Router,
+    ) -> std::io::Result<()> {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let writer = self.writer.clone();
+        let closer = self.closer();
+        let app = layer(self.into_router());
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                stop_signal().await;
+                closer.close();
+            })
+            .await?;
+        tokio::task::spawn_blocking(move || writer.checkpoint())
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
     /// The OpenAPI document this server will serve, without serving it.
     pub fn openapi(&self) -> Value {
         let entries = S::entries();
@@ -237,6 +289,8 @@ impl<S: Serve> Server<S> {
             permits: Arc::new(Semaphore::new(self.max_pending_writes)),
             committed,
             min_epoch_wait: self.min_epoch_wait,
+            hubs: Arc::default(),
+            closing: self.closing,
         });
 
         let mut mounted = Mounted::default();
@@ -404,6 +458,12 @@ async fn resource<S: Serve>(
         body,
     };
     if route.method.is_read() {
+        if wants_events(&headers) {
+            if !route.live {
+                return Problem::not_acceptable("this route doesn't stream").into_response();
+            }
+            return stream(st, i, call, &headers).await;
+        }
         return read(st, &headers, move |st, r| (st.entries[i].read)(r, &call)).await;
     }
     if route.body.is_some()
@@ -513,17 +573,167 @@ async fn read<S: Serve>(
     if let Err(problem) = reach_min_epoch(&st, headers).await {
         return problem.into_response();
     }
-    let res = tokio::task::spawn_blocking(move || {
+    match snapshot(st, answer).await {
+        Ok((epoch, data)) => respond(StatusCode::OK, epoch, data),
+        Err(problem) => problem.into_response(),
+    }
+}
+
+/// `answer` over one fresh snapshot, on the blocking pool: the data and
+/// the snapshot's epoch.
+async fn snapshot<S: Serve>(
+    st: Arc<Shared<S>>,
+    answer: impl FnOnce(&Shared<S>, &S::Read) -> Result<Value, Problem> + Send + 'static,
+) -> Result<(u64, Value), Problem> {
+    tokio::task::spawn_blocking(move || {
         let snap = st.reader.snapshot();
         let facades = st.reader.at(&snap);
         answer(&st, &facades).map(|data| (snap.frontier().outer, data))
     })
-    .await;
-    match res {
-        Ok(Ok((epoch, data))) => respond(StatusCode::OK, epoch, data),
-        Ok(Err(problem)) => problem.into_response(),
-        Err(e) => Problem::internal(format!("read failed: {e}")).into_response(),
+    .await
+    .map_err(|e| Problem::internal(format!("read failed: {e}")))?
+}
+
+/// Whether the client asked for Server-Sent Events.
+fn wants_events(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|m| {
+            m.split(';')
+                .next()
+                .is_some_and(|m| m.trim().eq_ignore_ascii_case("text/event-stream"))
+        })
+}
+
+/// A live `GET`: Server-Sent Events. A `snapshot` event with exactly what
+/// the plain `GET` answers, then a `change` event per commit that touches
+/// the resource; each event's `id` is its epoch. A reconnect carrying
+/// `Last-Event-ID` resumes from the hub's ring when it can, and gets a
+/// fresh snapshot when it can't; so does a client that falls behind.
+async fn stream<S: Serve>(
+    st: Arc<Shared<S>>,
+    i: usize,
+    call: Call,
+    headers: &HeaderMap,
+) -> Response {
+    if let Err(problem) = reach_min_epoch(&st, headers).await {
+        return problem.into_response();
     }
+    let resume = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let joined = st.hubs.join(i, resume, || {
+        let snap = st.reader.snapshot();
+        let facades = st.reader.at(&snap);
+        (st.entries[i].live)(&facades).map(|live| (snap.frontier().outer, live))
+    });
+    let Some(joined) = joined else {
+        return Problem::not_acceptable("this resource doesn't stream").into_response();
+    };
+
+    let mut queue = VecDeque::new();
+    let floor = match (joined.replay, resume) {
+        (Some(replay), Some(from)) => {
+            let floor = replay.last().map_or(from, |c| c.epoch);
+            queue.extend(replay.iter().map(|c| change_event(c)));
+            floor
+        }
+        _ => {
+            // Subscribed already: take the snapshot now, and the tail
+            // above its epoch is exactly what it lacks. A malformed query
+            // fails here, as a plain problem rather than a stream.
+            match snapshot_event(&st, i, &call).await {
+                Ok((epoch, event)) => {
+                    queue.push_back(event);
+                    epoch
+                }
+                Err(problem) => return problem.into_response(),
+            }
+        }
+    };
+
+    let closing = st.closing.subscribe();
+    let feed = Feed {
+        st,
+        i,
+        call,
+        rx: joined.rx,
+        floor,
+        queue,
+        closing,
+    };
+    let events = futures_util::stream::unfold(feed, |mut f| async move {
+        loop {
+            if let Some(event) = f.queue.pop_front() {
+                return Some((Ok::<_, std::convert::Infallible>(event), f));
+            }
+            let next = tokio::select! {
+                next = f.rx.recv() => next,
+                _ = f.closing.wait_for(|closing| *closing) => return None,
+            };
+            match next {
+                Ok(change) if change.epoch > f.floor => {
+                    f.floor = change.epoch;
+                    f.queue.push_back(change_event(&change));
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    match snapshot_event(&f.st, f.i, &f.call).await {
+                        Ok((epoch, event)) => {
+                            f.floor = epoch;
+                            f.queue.push_back(event);
+                        }
+                        Err(_) => return None,
+                    }
+                }
+                // The database closed: end the stream.
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+struct Feed<S: Serve> {
+    st: Arc<Shared<S>>,
+    i: usize,
+    call: Call,
+    rx: broadcast::Receiver<Arc<Change>>,
+    /// The newest epoch this client has: changes at or below it are
+    /// already in what it was sent.
+    floor: u64,
+    queue: VecDeque<Event>,
+    closing: watch::Receiver<bool>,
+}
+
+async fn snapshot_event<S: Serve>(
+    st: &Arc<Shared<S>>,
+    i: usize,
+    call: &Call,
+) -> Result<(u64, Event), Problem> {
+    let call = call.clone();
+    let (epoch, data) = snapshot(st.clone(), move |st, r| (st.entries[i].read)(r, &call)).await?;
+    let body = json!({ "epoch": epoch, "data": data }).to_string();
+    Ok((
+        epoch,
+        Event::default()
+            .event("snapshot")
+            .id(epoch.to_string())
+            .data(body),
+    ))
+}
+
+fn change_event(change: &Change) -> Event {
+    Event::default()
+        .event("change")
+        .id(change.epoch.to_string())
+        .data(&change.data)
 }
 
 /// Wait, bounded, until the store's frontier reaches the request's
@@ -631,4 +841,27 @@ async fn problem_status(res: Response) -> Response {
         out.headers_mut().insert(header::ALLOW, allow);
     }
     out
+}
+
+/// Ctrl-c, or SIGTERM where there is one.
+#[cfg(feature = "serve")]
+async fn stop_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = term => {}
+    }
 }

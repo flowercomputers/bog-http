@@ -1,0 +1,135 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1d1b16; --dim: #8a8579; --line: #e6e2d8; --hl: #fff1a8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16150f; --fg: #ece8dc; --dim: #8c8778; --line: #2c2a22; --hl: #5c4f00; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { position: sticky; top: 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+           padding: .75rem 1rem; background: var(--bg); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 1rem; margin: 0 .5rem 0 0; }
+  .pill { font-size: .8rem; padding: .1rem .5rem; border: 1px solid var(--line); border-radius: 99px; }
+  #q { margin-left: auto; padding: .35rem .6rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
+  #epoch { color: var(--dim); font: 12px ui-monospace, monospace; }
+  ol { list-style: none; margin: 0; padding: .5rem 1rem 6rem; }
+  li { padding: .35rem 0; border-bottom: 1px solid var(--line); }
+  li.fresh { animation: fresh 1.5s ease-out; }
+  @keyframes fresh { from { background: var(--hl); } }
+  .meta { font-size: .8rem; color: var(--dim); }
+  .meta b { font-weight: 600; }
+  mark { background: var(--hl); color: inherit; }
+  form#say { position: fixed; bottom: 0; left: 0; right: 0; display: flex; gap: .5rem; padding: .75rem 1rem;
+             background: var(--bg); border-top: 1px solid var(--line); }
+  #text { flex: 1; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+  button { padding: .5rem 1rem; border: 0; border-radius: 6px; background: var(--fg); color: var(--bg); font: inherit; cursor: pointer; }
+  .hint { color: var(--dim); }
+</style>
+<header>
+  <h1>Chat</h1>
+  <span class="pill" id="total">… messages</span>
+  <span id="authors"></span>
+  <input id="q" type="search" placeholder="Search" autocomplete="off" aria-label="Search messages">
+  <span id="epoch" title="the epoch this page reflects"></span>
+</header>
+<ol id="log"></ol>
+<form id="say">
+  <input id="text" placeholder="Say something" maxlength="1000" autocomplete="off" required aria-label="Message">
+  <button>Send</button>
+</form>
+<script>
+// Who you are: 128 random bits, kept in this browser.
+const me = localStorage.chatAuthor || (localStorage.chatAuthor =
+  [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""));
+document.getElementById("text").placeholder = "Say something as " + me.slice(0, 8);
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const color = (a) => `hsl(${parseInt(a.slice(0, 6), 16) % 360} 55% 45%)`;
+const clock = (s) => new Date(s * 1000).toISOString().slice(11, 16);
+let epoch = 0, query = "";
+const saw = (e) => { if (e > epoch) { epoch = e; $("epoch").textContent = "epoch " + e; } };
+
+// The log: the newest messages, then each one as it commits.
+const messages = new Map();
+function row(id, m, body) {
+  return `<li data-id="${id}"><div class="meta"><b style="color:${color(m.author)}">${m.author.slice(0, 8)}</b> ${clock(m.sent)}</div><div>${body ?? esc(m.text)}</div></li>`;
+}
+function renderLog(fresh) {
+  if (query) return;
+  const atBottom = innerHeight + scrollY > document.body.scrollHeight - 80;
+  const ids = [...messages.keys()].sort((a, b) => a - b).slice(-100);
+  $("log").innerHTML = ids.length ? ids.map((id) => row(id, messages.get(id))).join("") : `<li class="hint">No messages yet. Say something.</li>`;
+  if (fresh) for (const id of fresh) $("log").querySelector(`[data-id="${id}"]`)?.classList.add("fresh");
+  if (atBottom || !fresh) scrollTo(0, document.body.scrollHeight);
+}
+const log = new EventSource("/messages?order=desc&limit=100");
+log.addEventListener("snapshot", (e) => {
+  const { epoch: at, data } = JSON.parse(e.data);
+  messages.clear();
+  for (const { key, value } of data.items) messages.set(key, value);
+  saw(at); renderLog();
+});
+log.addEventListener("change", (e) => {
+  const { epoch: at, changes } = JSON.parse(e.data);
+  const fresh = [];
+  for (const { key, value, diff } of changes) {
+    if (diff > 0) { messages.set(key, value); fresh.push(key); } else messages.delete(key);
+  }
+  saw(at); renderLog(fresh);
+  if (query) find();
+});
+
+// The counts, live from two views.
+const total = new EventSource("/total");
+total.addEventListener("snapshot", (e) => { const s = JSON.parse(e.data); $("total").textContent = `${s.data ?? 0} messages`; });
+total.addEventListener("change", (e) => {
+  const c = JSON.parse(e.data).changes.find((c) => c.diff > 0);
+  if (c) $("total").textContent = `${c.value} messages`;
+});
+const authors = new Map();
+function renderAuthors() {
+  $("authors").innerHTML = [...authors].map(([a, n]) => `<span class="pill" style="color:${color(a)}" title="${n} messages">${a.slice(0, 8)}</span>`).join(" ");
+}
+const byAuthor = new EventSource("/by_author");
+byAuthor.addEventListener("snapshot", (e) => {
+  authors.clear();
+  for (const { key, value } of JSON.parse(e.data).data.items) authors.set(key, value);
+  renderAuthors();
+});
+byAuthor.addEventListener("change", (e) => {
+  for (const { key, value, diff } of JSON.parse(e.data).changes) {
+    if (diff > 0) authors.set(key, value); else if (authors.get(key) === value) authors.delete(key);
+  }
+  renderAuthors();
+});
+
+// Search: the index's own answer, re-asked as messages arrive.
+let typing;
+async function find() {
+  const asked = query;
+  const res = await fetch("/find?q=" + encodeURIComponent(asked), { headers: { "fold-min-epoch": String(epoch) } });
+  const { epoch: at, data } = await res.json();
+  if (asked !== query) return;
+  saw(at);
+  const words = asked.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const mark = (t) => esc(t).replace(/[\p{L}\p{N}]+/gu, (w) => words.some((q) => w.toLowerCase().startsWith(q)) ? `<mark>${w}</mark>` : w);
+  $("log").innerHTML = `<li class="hint">${data.length} result${data.length === 1 ? "" : "s"}</li>` +
+    data.map(({ id, message }) => row(id, message, mark(message.text))).join("");
+}
+$("q").oninput = () => {
+  clearTimeout(typing);
+  typing = setTimeout(() => { query = $("q").value.trim(); query ? find() : renderLog(); }, 120);
+};
+
+// Send: the write's epoch comes back; the stream brings the message.
+$("say").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("text").value;
+  $("text").value = "";
+  const res = await fetch("/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ author: me, text }) });
+  const body = await res.json();
+  if (!res.ok) { $("text").value = text; alert(body.detail ?? body.title); } else saw(body.epoch);
+};
+</script>

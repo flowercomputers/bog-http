@@ -65,6 +65,22 @@
 //! - [`Server::max_pending_writes`] bounds the writer's queue: past it,
 //!   writes get `503 overloaded` with `Retry-After` instead of piling up.
 //!
+//! # Live
+//! Every listing and singleton `GET` also streams: ask with
+//! `Accept: text/event-stream` (as `EventSource` does) and the first event,
+//! `snapshot`, is exactly what the plain `GET` answers; then one `change`
+//! event per commit that touches the resource, `{epoch, changes: [{key?,
+//! value, diff}]}`. Each event's `id` is its epoch, so a reconnect resumes
+//! from `Last-Event-ID` (replayed, or a fresh snapshot when too old). One
+//! hub per resource drains fold's subscription; a client that falls
+//! behind gets a fresh snapshot instead of an unbounded backlog.
+//!
+//! # Serving
+//! [`Server::serve`] binds, serves until ctrl-c or SIGTERM, ends live
+//! streams, drains requests, and checkpoints. [`cors`] admits a browser
+//! app on other origins, listed explicitly. For anything else,
+//! [`Server::into_router`] is a plain axum [`Router`](axum::Router).
+//!
 //! # Serving your own kinds
 //! A source or view type from outside fold serves by implementing
 //! [`Resource`] (and [`SourceResource`] if writable): describe its
@@ -72,6 +88,7 @@
 //! thread. The derive needs nothing more.
 
 mod custom;
+mod live;
 mod openapi;
 mod problem;
 mod resource;
@@ -90,7 +107,39 @@ pub use resource::{
 pub use resources::{
     BagAdd, BagRemove, By, CompleteParams, Completion, Hit, OrderedParams, SearchParams,
 };
-pub use server::{MIN_EPOCH_HEADER, Server};
+pub use server::{Closer, MIN_EPOCH_HEADER, Server};
+
+/// A CORS layer for a browser app on another origin (a dev server, a
+/// desktop shell): these origins only, with the methods and headers the
+/// API uses, exposing `fold-epoch`, `Location`, and `Retry-After`.
+///
+/// There is deliberately no "any origin": a server on `localhost` that
+/// any web page may call is one any site you visit can read and write.
+///
+/// # Panics
+/// If an origin isn't a valid header value.
+#[cfg(feature = "cors")]
+pub fn cors<'a>(origins: impl IntoIterator<Item = &'a str>) -> tower_http::cors::CorsLayer {
+    use axum::http::{HeaderName, HeaderValue, Method, header};
+    let origins: Vec<HeaderValue> = origins
+        .into_iter()
+        .map(|o| o.parse().expect("an origin is a header value"))
+        .collect();
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            HeaderName::from_static(MIN_EPOCH_HEADER),
+            HeaderName::from_static("last-event-id"),
+        ])
+        .expose_headers([
+            HeaderName::from_static(wire::EPOCH_HEADER),
+            header::LOCATION,
+            header::RETRY_AFTER,
+        ])
+}
 pub use tx::MAX_TX_OPS;
 
 #[cfg(feature = "derive")]

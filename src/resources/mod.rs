@@ -29,6 +29,7 @@ fn list_route<K: Wire, V: Wire>(g: &mut SchemaGenerator) -> Route {
     Route::get("", "list", "List rows in key order")
         .query::<ListParams>()
         .response::<Page<Row<K, V>>>(g)
+        .live()
 }
 
 /// `GET /n/{key}`: one row's value.
@@ -92,4 +93,18 @@ fn no_row(call: &Call) -> Problem {
         "no row at key {}",
         call.key.as_deref().unwrap_or_default()
     ))
+}
+
+/// A change to a keyed row: `{key, value, diff}`.
+fn keyed_change<K: serde::Serialize, V: serde::Serialize>(
+    (key, value): (K, V),
+    diff: fold::Diff,
+) -> Value {
+    serde_json::json!({ "key": key, "value": value, "diff": diff })
+}
+
+/// A change to an unkeyed value (a member, an element, a singleton):
+/// `{value, diff}`.
+fn value_change<T: serde::Serialize>(value: T, diff: fold::Diff) -> Value {
+    serde_json::json!({ "value": value, "diff": diff })
 }

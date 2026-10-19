@@ -34,6 +34,16 @@
         },
         "description": "A malformed key, query, cursor, or body."
       },
+      "NotAcceptable": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "A stream was asked of a route that doesn't stream."
+      },
       "NotFound": {
         "content": {
           "application/problem+json": {
@@ -983,6 +993,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -1006,6 +1027,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -1017,6 +1044,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -1206,6 +1236,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -1374,6 +1407,17 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -1400,6 +1444,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -1411,6 +1461,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -1579,6 +1632,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -1654,6 +1710,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -1691,6 +1750,17 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -1718,6 +1788,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -1729,6 +1805,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -1780,6 +1859,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -1803,6 +1893,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -1814,6 +1910,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -1943,6 +2042,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -1993,6 +2095,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -2016,6 +2129,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -2027,6 +2146,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -2150,6 +2272,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -2338,6 +2463,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -2361,6 +2497,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -2372,6 +2514,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -2440,6 +2585,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -2491,6 +2639,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -2514,6 +2673,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -2525,6 +2690,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -2593,6 +2761,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -2643,6 +2814,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -2666,6 +2848,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -2677,6 +2865,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -2870,6 +3061,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
@@ -2921,6 +3115,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -2944,6 +3149,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -2955,6 +3166,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -3078,6 +3292,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -3217,6 +3434,17 @@
           },
           {
             "$ref": "#/components/parameters/MinEpoch"
+          },
+          {
+            "description": "With `Accept: text/event-stream`: resume after this epoch, replaying missed changes when the server still has them, else starting from a fresh snapshot.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -3240,6 +3468,12 @@
                   ],
                   "type": "object"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "type": "string"
+                }
               }
             },
             "description": "Success.",
@@ -3251,6 +3485,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -3347,6 +3584,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"

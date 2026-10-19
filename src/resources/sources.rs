@@ -9,9 +9,9 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{answer_keyed, get_route, list_route};
+use super::{answer_keyed, get_route, keyed_change, list_route, value_change};
 use crate::resource::{
-    Apply, Call, Describe, MINT_OP, Resource, Route, SourceResource, Written, schema_in,
+    Apply, Call, Describe, Live, MINT_OP, Resource, Route, SourceResource, Written, schema_in,
 };
 use crate::wire::{
     Counted, DEFAULT_LIMIT, KeyOf, ListParams, Removed, arranged, decode_cursor, limit, paginate,
@@ -47,6 +47,10 @@ impl<K: Data + Wire, V: Data + Wire> Resource for Table<K, V> {
 
     fn answer(facade: &Read<K, V>, call: &Call) -> Result<Value, Problem> {
         answer_keyed(facade, call)
+    }
+
+    fn live(facade: &Read<K, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), keyed_change))
     }
 }
 
@@ -117,6 +121,10 @@ impl<V: Data + Wire> Resource for Events<V> {
     fn answer(facade: &Read<Id<V>, V>, call: &Call) -> Result<Value, Problem> {
         answer_keyed(facade, call)
     }
+
+    fn live(facade: &Read<Id<V>, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), keyed_change))
+    }
 }
 
 impl<V: Data + Wire> SourceResource for Events<V> {
@@ -144,7 +152,8 @@ impl<T: Data + Wire> Resource for Set<T> {
             .route(
                 Route::get("", "list", "List members in order")
                     .query::<ListParams>()
-                    .response::<crate::wire::Page<T>>(g),
+                    .response::<crate::wire::Page<T>>(g)
+                    .live(),
             )
             .route(
                 Route::get("/{key}", "contains", "Test membership: `true`, or 404")
@@ -189,6 +198,12 @@ impl<T: Data + Wire> Resource for Set<T> {
             _ => Err(call.unrouted()),
         }
     }
+
+    fn live(facade: &SetRead<T>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), |(t, ()), d| {
+            value_change(t, d)
+        }))
+    }
 }
 
 impl<T: Data + Wire> SourceResource for Set<T> {
@@ -224,7 +239,9 @@ impl<V: Data + Wire> Resource for Cell<V> {
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
         Describe::new(name, "cell", schema_in::<V>(g))
             .route(
-                Route::get("", "get", "Get the value: `null` while unset").response::<Option<V>>(g),
+                Route::get("", "get", "Get the value: `null` while unset")
+                    .response::<Option<V>>(g)
+                    .live(),
             )
             .route(
                 Route::put("", "set", "Set the value")
@@ -240,6 +257,12 @@ impl<V: Data + Wire> Resource for Cell<V> {
             "get" => to_json(&facade.get()),
             _ => Err(call.unrouted()),
         }
+    }
+
+    fn live(facade: &CellRead<V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), |((), v), d| {
+            value_change(v, d)
+        }))
     }
 }
 
@@ -305,7 +328,8 @@ impl<T: Data + Wire> Resource for Bag<T> {
             .route(
                 Route::get("", "list", "List values in order, with their counts")
                     .query::<ListParams>()
-                    .response::<crate::wire::Page<Counted<T>>>(g),
+                    .response::<crate::wire::Page<Counted<T>>>(g)
+                    .live(),
             )
             .route(
                 Route::get("/{key}", "count", "Count copies of a value (0 if none)")
@@ -338,6 +362,10 @@ impl<T: Data + Wire> Resource for Bag<T> {
             "count" => to_json(&facade.get(&call.key::<T>()?)),
             _ => Err(call.unrouted()),
         }
+    }
+
+    fn live(facade: &BagRead<T>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), value_change))
     }
 }
 
