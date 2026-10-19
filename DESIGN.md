@@ -1,6 +1,6 @@
 # fold-http — design draft
 
-Status: milestone 1 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
+Status: milestones 1–2 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
 
 ## The goal behind the goal
@@ -239,3 +239,35 @@ Decisions taken while building, worth revisiting:
   `SourceDecl::read` on the same types.
 - Nested `#[schema]` fields are a compile error asking for
   `#[serve(skip)]`, until path prefixes land.
+
+### Milestone 2 — done (2026-10-19)
+
+- Every fold2 kind serves: `Set`, `Cell`, `Bag`, `OrderedView` (by key,
+  or by value with bounds and `(value, key)` cursors), `GroupView` (all
+  pairs, or one key's values), `ValueView`, `SearchView` (BM25 search,
+  completion).
+- Resources describe themselves as `Route`s (method, path, op, schemas
+  for key/query/body/response, 201/404 flags). One list mounts the
+  router, fills `/_schema`, and generates OpenAPI; `Ops` flags are gone.
+- `GET /openapi.json`: OpenAPI 3.1 with shared `components/schemas`
+  (`$ref`s, so recursive types work), stable names for generic shapes
+  (`Page_Row_Id_Customer`), documented problems, the `fold-epoch`
+  header, field doc comments as descriptions. `Server::title/version/
+  description` fill `info`.
+- fold2 (`fold-http` branch): `SetRead::arrangement()` and
+  `BagRead::arrangement()`, like the other read facades, so sets and
+  bags paginate by cursor.
+- Outside judges: golden snapshot + `$ref` closure + every-route-
+  documented tests; `scripts/check-openapi.sh` runs
+  `openapi-spec-validator`, Redocly lint, and type-checks a client
+  against `openapi-typescript` output. All pass.
+
+Decisions worth revisiting:
+
+- Static subpaths share the key namespace (`/names/complete`); kinds
+  that have both `/{key}` and static routes would shadow those keys.
+  None do today; the router asserts no method/path collides.
+- A bag `DELETE` removes at most the copies present; counts never go
+  negative over HTTP.
+- `Cell` and `ValueView` answer `null` when empty rather than 404.
+- `security` is undocumented until auth lands (milestone 5).

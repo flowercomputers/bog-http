@@ -36,9 +36,23 @@ pub struct Shop {
     customers: Table<Id<Customer>, Customer>,
     prefs: Table<String, u32>,
     orders: Events<Order>,
+    /// Labels on the shop.
+    tags: Set<String>,
+    motd: Cell<String>,
+    stock: Bag<String>,
     /// Customer → total spend.
     #[view]
     spend: MapView<Id<Customer>, isize>,
+    /// Customers by spend.
+    #[view]
+    ranked: OrderedView<Id<Customer>, isize>,
+    #[view]
+    tags_by_len: GroupView<usize, String>,
+    #[view]
+    order_count: ValueView<isize>,
+    /// Customers by name.
+    #[view]
+    names: SearchView<Id<Customer>>,
     #[view]
     #[serve(skip)]
     by_region: MapView<String, isize>,
@@ -50,8 +64,13 @@ impl Declare for Shop {
     fn declare(b: &mut ShopBuilder<Rejected>) {
         b.orders.reject(|o| o.cents <= 0);
         b.orders.foreign_key(&b.customers, |o| o.customer);
-        b.spend
-            .define(&b.orders.key_by(|o| o.customer).map(|o| o.cents).sum());
+        let spend = b.orders.key_by(|o| o.customer).map(|o| o.cents).sum();
+        b.spend.define(&spend);
+        b.ranked.define(&spend);
+        b.tags_by_len
+            .define(&b.tags.map_with(|t, _| t.clone()).key_by(|t| t.len()));
+        b.order_count.define(&b.orders.count());
+        b.names.define(&b.customers.map(|c| c.name));
         b.by_region
             .define(&b.customers.key_by(|c| c.region.clone()).map(|_| 1).sum());
     }

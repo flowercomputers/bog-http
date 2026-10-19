@@ -69,9 +69,15 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 "`_`-prefixed names are reserved for fold-http's own routes; rename the field or #[serve(skip)] it",
             ));
         }
+        let doc = doc_comment(f);
+        let describe = if doc.is_empty() {
+            quote!()
+        } else {
+            quote!(.description(#doc))
+        };
         entries.push(if is("view") {
             quote_spanned! {ty.span()=>
-                ::fold_http::Entry::<Self>::view::<#ty>(#field_name, |r| &r.#ident)
+                ::fold_http::Entry::<Self>::view::<#ty>(#field_name, |r| &r.#ident) #describe
             }
         } else {
             quote_spanned! {ty.span()=>
@@ -81,7 +87,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                     |w| &mut w.#ident,
                     (&&#p::Probe::<#ty>::NEW)
                         .mint::<<Self as #p::fold::Declare>::Error>(),
-                )
+                ) #describe
             }
         });
     }
@@ -110,4 +116,36 @@ fn skipped(f: &syn::Field) -> syn::Result<bool> {
         })?;
     }
     Ok(skip)
+}
+
+/// A field's `///` comment, one line per `#[doc]`, common indent removed.
+fn doc_comment(f: &syn::Field) -> String {
+    let lines: Vec<String> = f
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("doc"))
+        .filter_map(|a| match &a.meta {
+            syn::Meta::NameValue(nv) => match &nv.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => Some(s.value()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    let indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| l.get(indent..).unwrap_or("").trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
 }

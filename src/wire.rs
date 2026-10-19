@@ -1,5 +1,6 @@
 //! The wire contract shared by every resource: the response envelope,
-//! key and body decoding, and keyset pagination.
+//! key, query, and body decoding, keyset pagination, and the response
+//! shapes resources share.
 
 use std::ops::Bound;
 
@@ -7,13 +8,15 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use fold::Read;
+use fold::Diff;
 use fold::schema::Data;
+use fold::storage::Arrangement;
+use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Problem, Wire};
+use crate::Problem;
 
 /// The response header carrying the epoch of the snapshot a response was
 /// read at, or the epoch a write committed into.
@@ -21,7 +24,7 @@ pub const EPOCH_HEADER: &str = "fold-epoch";
 
 /// The default page size of a listing.
 pub const DEFAULT_LIMIT: usize = 100;
-/// The largest page a listing will return.
+/// The largest page a listing, or a search's `k`, may ask for.
 pub const MAX_LIMIT: usize = 1000;
 
 /// Every successful response body.
@@ -61,6 +64,12 @@ pub fn parse_body<T: DeserializeOwned>(body: &[u8]) -> Result<T, Problem> {
     serde_json::from_slice(body).map_err(|e| Problem::bad_request(format!("invalid body: {e}")))
 }
 
+/// Decode a query string (absent means empty).
+pub fn parse_query<Q: DeserializeOwned>(query: Option<&str>) -> Result<Q, Problem> {
+    serde_urlencoded::from_str(query.unwrap_or(""))
+        .map_err(|e| Problem::bad_request(format!("invalid query: {e}")))
+}
+
 /// Refuse a body that doesn't declare itself JSON (`application/json`
 /// or any `+json` type).
 pub(crate) fn require_json(headers: &HeaderMap) -> Result<(), Problem> {
@@ -81,12 +90,12 @@ pub(crate) fn require_json(headers: &HeaderMap) -> Result<(), Problem> {
     }
 }
 
-pub(crate) fn to_json<T: Serialize>(value: &T) -> Result<Value, Problem> {
+pub fn to_json<T: Serialize>(value: &T) -> Result<Value, Problem> {
     serde_json::to_value(value).map_err(|e| Problem::internal(format!("serialize: {e}")))
 }
 
 /// Iteration order of a listing.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Order {
     #[default]
@@ -94,38 +103,40 @@ pub enum Order {
     Desc,
 }
 
-/// Query parameters of a listing: `?limit=&after=&order=`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Query parameters of a listing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListParams {
-    /// Page size, `1..=MAX_LIMIT`; defaults to [`DEFAULT_LIMIT`].
+    /// Page size, 1 to 1000; 100 by default.
     pub limit: Option<usize>,
     /// The `next` cursor of the previous page.
     pub after: Option<String>,
+    /// `asc` (default) or `desc`.
     #[serde(default)]
     pub order: Order,
 }
 
-impl ListParams {
-    pub fn limit(&self) -> Result<usize, Problem> {
-        match self.limit {
-            None => Ok(DEFAULT_LIMIT),
-            Some(n) if (1..=MAX_LIMIT).contains(&n) => Ok(n),
-            Some(n) => Err(Problem::bad_request(format!(
-                "limit must be between 1 and {MAX_LIMIT}, got {n}"
-            ))),
-        }
+/// A page size from a request: `None` is the default, out of range is
+/// refused.
+pub fn limit(requested: Option<usize>, default: usize) -> Result<usize, Problem> {
+    match requested {
+        None => Ok(default),
+        Some(n) if (1..=MAX_LIMIT).contains(&n) => Ok(n),
+        Some(n) => Err(Problem::bad_request(format!(
+            "limit must be between 1 and {MAX_LIMIT}, got {n}"
+        ))),
     }
 }
 
-/// An opaque position in a listing: the last key served, as base64url
+/// An opaque position in a listing: the last row served, as base64url
 /// JSON. Opaque to clients so the encoding can change.
-pub fn encode_cursor<K: Serialize>(key: &K) -> Result<String, Problem> {
-    let json = serde_json::to_vec(key).map_err(|e| Problem::internal(format!("cursor: {e}")))?;
+pub fn encode_cursor<C: Serialize>(position: &C) -> Result<String, Problem> {
+    let json =
+        serde_json::to_vec(position).map_err(|e| Problem::internal(format!("cursor: {e}")))?;
     Ok(URL_SAFE_NO_PAD.encode(json))
 }
 
-pub fn decode_cursor<K: DeserializeOwned>(cursor: &str) -> Result<K, Problem> {
+pub fn decode_cursor<C: DeserializeOwned>(cursor: &str) -> Result<C, Problem> {
     URL_SAFE_NO_PAD
         .decode(cursor)
         .ok()
@@ -133,42 +144,94 @@ pub fn decode_cursor<K: DeserializeOwned>(cursor: &str) -> Result<K, Problem> {
         .ok_or_else(|| Problem::bad_request("invalid cursor"))
 }
 
-/// One page of a key-ordered relation: `{items: [{key, value}], next}`.
+/// A page of a listing. `next` is the cursor for the following page,
+/// absent on the last.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Page_{T}")]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next: Option<String>,
+}
+
+/// Take up to `limit` rows, and a cursor (from `position` of the last
+/// one) if more remain.
 ///
-/// Keyset pagination: a page starts strictly after the cursor's key, so
-/// pages stay stable under concurrent writes and cost nothing to skip.
-pub fn page<K: Data + Wire, V: Data + Wire>(
-    read: &Read<K, V>,
-    params: &ListParams,
-) -> Result<Value, Problem> {
-    let limit = params.limit()?;
-    let after = params
-        .after
-        .as_deref()
-        .map(decode_cursor::<K>)
-        .transpose()?;
-    let rows: Box<dyn Iterator<Item = (K, V)> + '_> = match (params.order, after) {
-        (Order::Asc, None) => Box::new(read.iter()),
-        (Order::Asc, Some(k)) => Box::new(read.range((Bound::Excluded(k), Bound::Unbounded))),
-        (Order::Desc, None) => Box::new(read.iter_rev()),
-        (Order::Desc, Some(k)) => Box::new(read.range_rev(..k)),
-    };
+/// Keyset pagination: the next page resumes strictly after the cursor's
+/// position, so pages stay stable under concurrent writes and skipping
+/// to a page costs nothing.
+pub fn paginate<T, C: Serialize>(
+    mut rows: impl Iterator<Item = T>,
+    limit: usize,
+    position: impl Fn(&T) -> C,
+) -> Result<Page<T>, Problem> {
     let mut items = Vec::with_capacity(limit.min(64));
-    let mut last = None;
-    let mut more = false;
-    for (k, v) in rows {
+    for row in rows.by_ref() {
+        items.push(row);
         if items.len() == limit {
-            more = true;
             break;
         }
-        items.push(serde_json::json!({ "key": to_json(&k)?, "value": to_json(&v)? }));
-        last = Some(k);
     }
-    let next = match (more, last) {
-        (true, Some(k)) => Some(encode_cursor(&k)?),
+    let next = match items.last() {
+        Some(last) if items.len() == limit && rows.next().is_some() => {
+            Some(encode_cursor(&position(last))?)
+        }
         _ => None,
     };
-    Ok(serde_json::json!({ "items": items, "next": next }))
+    Ok(Page { items, next })
+}
+
+/// An arrangement's rows strictly after `after` in `order`.
+pub fn arranged<'a, T: Data>(
+    arrangement: &'a Arrangement<T>,
+    order: Order,
+    after: Option<T>,
+) -> Box<dyn Iterator<Item = (T, Diff)> + 'a> {
+    match (order, after) {
+        (Order::Asc, None) => Box::new(arrangement.iter()),
+        (Order::Asc, Some(t)) => {
+            Box::new(arrangement.range((Bound::Excluded(t), Bound::Unbounded)))
+        }
+        (Order::Desc, None) => Box::new(arrangement.iter_rev()),
+        (Order::Desc, Some(t)) => Box::new(arrangement.range_rev(..t)),
+    }
+}
+
+/// A keyed row.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Row_{K}_{V}")]
+pub struct Row<K, V> {
+    pub key: K,
+    pub value: V,
+}
+
+/// A value with its multiplicity.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Counted_{T}")]
+pub struct Counted<T> {
+    pub value: T,
+    pub count: Diff,
+}
+
+/// One value of a key in a grouped view, with its multiplicity.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "GroupRow_{K}_{V}")]
+pub struct GroupRow<K, V> {
+    pub key: K,
+    pub value: V,
+    pub count: Diff,
+}
+
+/// The key a write addressed or minted.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "KeyOf_{K}")]
+pub struct KeyOf<K> {
+    pub key: K,
+}
+
+/// Whether a delete found something to remove.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Removed {
+    pub removed: bool,
 }
 
 #[cfg(test)]
@@ -193,6 +256,27 @@ mod tests {
         let c = encode_cursor(&("k", 7u32)).unwrap();
         assert_eq!(decode_cursor::<(String, u32)>(&c).unwrap(), ("k".into(), 7));
         assert_eq!(decode_cursor::<u64>("!!").unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn pages_end_exactly_at_the_last_row() {
+        let page = paginate(1..=4, 2, |n| *n).unwrap();
+        assert_eq!(page.items, [1, 2]);
+        assert_eq!(decode_cursor::<i32>(&page.next.unwrap()).unwrap(), 2);
+        let page = paginate(1..=4, 4, |n| *n).unwrap();
+        assert_eq!((page.items.len(), page.next), (4, None));
+        let page = paginate(0..0, 4, |n| *n).unwrap();
+        assert!(page.items.is_empty() && page.next.is_none());
+    }
+
+    #[test]
+    fn queries_decode_with_defaults() {
+        let p: ListParams = parse_query(None).unwrap();
+        assert_eq!((p.limit, p.order), (None, Order::Asc));
+        let p: ListParams = parse_query(Some("limit=5&order=desc")).unwrap();
+        assert_eq!((p.limit, p.order), (Some(5), Order::Desc));
+        assert!(parse_query::<ListParams>(Some("bogus=1")).is_err());
+        assert!(parse_query::<ListParams>(Some("limit=x")).is_err());
     }
 
     #[test]

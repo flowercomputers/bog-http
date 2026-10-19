@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use fold::Rejected;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 /// The media type of every error body.
@@ -15,14 +16,19 @@ pub const PROBLEM_JSON: &str = "application/problem+json";
 /// `type` is a stable identifier clients can branch on; `title` is a
 /// short human summary of that type; `detail` explains this occurrence.
 /// Refusals carry `at`, the source or view that refused.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Problem {
+    /// Stable, machine-readable: `bad-request`, `not-found`,
+    /// `method-not-allowed`, `unsupported-media-type`, `rejected`,
+    /// `unavailable`, `internal`.
     #[serde(rename = "type")]
     pub kind: Cow<'static, str>,
     pub title: Cow<'static, str>,
     pub status: u16,
+    /// What went wrong this time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// For `rejected`: the source or view that refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
 }

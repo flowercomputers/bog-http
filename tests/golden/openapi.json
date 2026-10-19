@@ -1,0 +1,2866 @@
+{
+  "components": {
+    "headers": {
+      "FoldEpoch": {
+        "description": "The epoch of the snapshot read, or the first epoch that includes the write.",
+        "schema": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "A malformed key, query, cursor, or body."
+      },
+      "NotFound": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "Nothing at this key, or no such route."
+      },
+      "Rejected": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "A schema constraint refused the write; `at` names the source or view that refused. Nothing was applied."
+      },
+      "Unavailable": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "The store can't take writes right now (I/O failure, writer stopped)."
+      },
+      "UnsupportedMediaType": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "The body isn't `application/json`."
+      }
+    },
+    "schemas": {
+      "BagAdd_string": {
+        "additionalProperties": false,
+        "description": "`POST /n`: add copies of a value.",
+        "properties": {
+          "times": {
+            "description": "How many copies to add; 1 by default.",
+            "format": "int",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "Completion": {
+        "description": "One completion: a term and how many documents contain it.",
+        "properties": {
+          "count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "term": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "term",
+          "count"
+        ],
+        "type": "object"
+      },
+      "Counted_string": {
+        "description": "A value with its multiplicity.",
+        "properties": {
+          "count": {
+            "format": "int",
+            "type": "integer"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ],
+        "type": "object"
+      },
+      "Customer": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "region"
+        ],
+        "type": "object"
+      },
+      "GroupRow_uint_string": {
+        "description": "One value of a key in a grouped view, with its multiplicity.",
+        "properties": {
+          "count": {
+            "format": "int",
+            "type": "integer"
+          },
+          "key": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "count"
+        ],
+        "type": "object"
+      },
+      "Hit_Id": {
+        "description": "One search result.",
+        "properties": {
+          "key": {
+            "description": "The matching document.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "score": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "key",
+          "score"
+        ],
+        "type": "object"
+      },
+      "KeyOf_Id": {
+        "description": "The key a write addressed or minted.",
+        "properties": {
+          "key": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "KeyOf_string": {
+        "description": "The key a write addressed or minted.",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "Order": {
+        "properties": {
+          "cents": {
+            "format": "int",
+            "type": "integer"
+          },
+          "customer": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "customer",
+          "cents"
+        ],
+        "type": "object"
+      },
+      "Page_Counted_string": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Counted_string"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Page_GroupRow_uint_string": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GroupRow_uint_string"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Page_Row_Id_Customer": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Row_Id_Customer"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Page_Row_Id_Order": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Row_Id_Order"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Page_Row_Id_int": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Row_Id_int"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Page_Row_string_uint32": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Row_string_uint32"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Page_string": {
+        "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
+        "properties": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Problem": {
+        "description": "An error response: an HTTP status plus a machine-readable `type`.\n\n`type` is a stable identifier clients can branch on; `title` is a\nshort human summary of that type; `detail` explains this occurrence.\nRefusals carry `at`, the source or view that refused.",
+        "properties": {
+          "at": {
+            "description": "For `rejected`: the source or view that refused.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "What went wrong this time.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "description": "Stable, machine-readable: `bad-request`, `not-found`,\n`method-not-allowed`, `unsupported-media-type`, `rejected`,\n`unavailable`, `internal`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status"
+        ],
+        "type": "object"
+      },
+      "Removed": {
+        "description": "Whether a delete found something to remove.",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "type": "object"
+      },
+      "Row_Id_Customer": {
+        "description": "A keyed row.",
+        "properties": {
+          "key": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Customer"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "Row_Id_Order": {
+        "description": "A keyed row.",
+        "properties": {
+          "key": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Order"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "Row_Id_int": {
+        "description": "A keyed row.",
+        "properties": {
+          "key": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "format": "int",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "Row_string_uint32": {
+        "description": "A keyed row.",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Shop",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/_health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        },
+        "summary": "Liveness",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/_schema": {
+      "get": {
+        "operationId": "schema",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        },
+        "summary": "Describe every resource: kind, schemas, routes",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/customers": {
+      "get": {
+        "operationId": "customers_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Row_Id_Customer"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List rows in key order",
+        "tags": [
+          "customers"
+        ]
+      },
+      "post": {
+        "operationId": "customers_insert",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Customer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_Id"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Insert a row, minting its id",
+        "tags": [
+          "customers"
+        ]
+      }
+    },
+    "/customers/{key}": {
+      "delete": {
+        "operationId": "customers_remove",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Removed"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Remove the row at a key",
+        "tags": [
+          "customers"
+        ]
+      },
+      "get": {
+        "operationId": "customers_get",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Customer"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "summary": "Get the value at a key",
+        "tags": [
+          "customers"
+        ]
+      },
+      "put": {
+        "operationId": "customers_upsert",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Customer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_Id"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_Id"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Insert or replace the value at a key",
+        "tags": [
+          "customers"
+        ]
+      }
+    },
+    "/motd": {
+      "delete": {
+        "operationId": "motd_clear",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Removed"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Unset the value",
+        "tags": [
+          "motd"
+        ]
+      },
+      "get": {
+        "operationId": "motd_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "Get the value: `null` while unset",
+        "tags": [
+          "motd"
+        ]
+      },
+      "put": {
+        "operationId": "motd_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Set the value",
+        "tags": [
+          "motd"
+        ]
+      }
+    },
+    "/names": {
+      "get": {
+        "description": "Customers by name.",
+        "operationId": "names_search",
+        "parameters": [
+          {
+            "description": "How many hits, 1 to 1000; 10 by default.",
+            "in": "query",
+            "name": "k",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The query text; any term may match (BM25).",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Hit_Id"
+                      },
+                      "type": "array"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "Full-text search, best first",
+        "tags": [
+          "names"
+        ]
+      }
+    },
+    "/names/complete": {
+      "get": {
+        "description": "Customers by name.",
+        "operationId": "names_complete",
+        "parameters": [
+          {
+            "description": "How many terms, 1 to 1000; 10 by default.",
+            "in": "query",
+            "name": "k",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The prefix to complete.",
+            "in": "query",
+            "name": "prefix",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Completion"
+                      },
+                      "type": "array"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "Complete a term, most common first",
+        "tags": [
+          "names"
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        },
+        "summary": "This document",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/order_count": {
+      "get": {
+        "operationId": "order_count_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "format": "int",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "Get the value: `null` until the view has one",
+        "tags": [
+          "order_count"
+        ]
+      }
+    },
+    "/orders": {
+      "get": {
+        "operationId": "orders_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Row_Id_Order"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List rows in key order",
+        "tags": [
+          "orders"
+        ]
+      },
+      "post": {
+        "operationId": "orders_append",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Order"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_Id"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Append an event, minting its id",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{key}": {
+      "get": {
+        "operationId": "orders_get",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "summary": "Get the value at a key",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/prefs": {
+      "get": {
+        "operationId": "prefs_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Row_string_uint32"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List rows in key order",
+        "tags": [
+          "prefs"
+        ]
+      }
+    },
+    "/prefs/{key}": {
+      "delete": {
+        "operationId": "prefs_remove",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Removed"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Remove the row at a key",
+        "tags": [
+          "prefs"
+        ]
+      },
+      "get": {
+        "operationId": "prefs_get",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "summary": "Get the value at a key",
+        "tags": [
+          "prefs"
+        ]
+      },
+      "put": {
+        "operationId": "prefs_upsert",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Insert or replace the value at a key",
+        "tags": [
+          "prefs"
+        ]
+      }
+    },
+    "/ranked": {
+      "get": {
+        "description": "Customers by spend.",
+        "operationId": "ranked_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort by `key` (default) or by `value` (ties by key).",
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "enum": [
+                "key",
+                "value"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "With `by=value`: the greatest value to include, as JSON.",
+            "in": "query",
+            "name": "max",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "With `by=value`: the least value to include, as JSON.",
+            "in": "query",
+            "name": "min",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Row_Id_int"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List rows by key, or by value with `by=value`",
+        "tags": [
+          "ranked"
+        ]
+      }
+    },
+    "/ranked/{key}": {
+      "get": {
+        "description": "Customers by spend.",
+        "operationId": "ranked_get",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "format": "int",
+                      "type": "integer"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "summary": "Get the value at a key",
+        "tags": [
+          "ranked"
+        ]
+      }
+    },
+    "/spend": {
+      "get": {
+        "description": "Customer → total spend.",
+        "operationId": "spend_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Row_Id_int"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List rows in key order",
+        "tags": [
+          "spend"
+        ]
+      }
+    },
+    "/spend/{key}": {
+      "get": {
+        "description": "Customer → total spend.",
+        "operationId": "spend_get",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "format": "int",
+                      "type": "integer"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "summary": "Get the value at a key",
+        "tags": [
+          "spend"
+        ]
+      }
+    },
+    "/stock": {
+      "get": {
+        "operationId": "stock_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Counted_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List values in order, with their counts",
+        "tags": [
+          "stock"
+        ]
+      },
+      "post": {
+        "operationId": "stock_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BagAdd_string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Counted_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Add copies of a value",
+        "tags": [
+          "stock"
+        ]
+      }
+    },
+    "/stock/{key}": {
+      "delete": {
+        "operationId": "stock_remove",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many copies to remove, at most as many as there are; 1 by\ndefault.",
+            "in": "query",
+            "name": "times",
+            "required": false,
+            "schema": {
+              "format": "int",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Counted_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Remove copies of a value",
+        "tags": [
+          "stock"
+        ]
+      },
+      "get": {
+        "operationId": "stock_count",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "format": "int",
+                      "type": "integer"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "Count copies of a value (0 if none)",
+        "tags": [
+          "stock"
+        ]
+      }
+    },
+    "/tags": {
+      "get": {
+        "description": "Labels on the shop.",
+        "operationId": "tags_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List members in order",
+        "tags": [
+          "tags"
+        ]
+      }
+    },
+    "/tags/{key}": {
+      "delete": {
+        "description": "Labels on the shop.",
+        "operationId": "tags_remove",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Removed"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Remove a member",
+        "tags": [
+          "tags"
+        ]
+      },
+      "get": {
+        "description": "Labels on the shop.",
+        "operationId": "tags_contains",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "type": "boolean"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        },
+        "summary": "Test membership: `true`, or 404",
+        "tags": [
+          "tags"
+        ]
+      },
+      "put": {
+        "description": "Labels on the shop.",
+        "operationId": "tags_insert",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/KeyOf_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Add a member",
+        "tags": [
+          "tags"
+        ]
+      }
+    },
+    "/tags_by_len": {
+      "get": {
+        "operationId": "tags_by_len_list",
+        "parameters": [
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_GroupRow_uint_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List every (key, value) pair, with counts",
+        "tags": [
+          "tags_by_len"
+        ]
+      }
+    },
+    "/tags_by_len/{key}": {
+      "get": {
+        "operationId": "tags_by_len_values",
+        "parameters": [
+          {
+            "description": "The key as JSON (`42`, `[1,\"a\"]`); string keys may also be written bare.",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The `next` cursor of the previous page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1 to 1000; 100 by default.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`asc` (default) or `desc`.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Page_Counted_string"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        },
+        "summary": "List a key's values, with counts",
+        "tags": [
+          "tags_by_len"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "customers"
+    },
+    {
+      "name": "prefs"
+    },
+    {
+      "name": "orders"
+    },
+    {
+      "description": "Labels on the shop.",
+      "name": "tags"
+    },
+    {
+      "name": "motd"
+    },
+    {
+      "name": "stock"
+    },
+    {
+      "description": "Customer → total spend.",
+      "name": "spend"
+    },
+    {
+      "description": "Customers by spend.",
+      "name": "ranked"
+    },
+    {
+      "name": "tags_by_len"
+    },
+    {
+      "name": "order_count"
+    },
+    {
+      "description": "Customers by name.",
+      "name": "names"
+    },
+    {
+      "description": "Introspection and health.",
+      "name": "meta"
+    }
+  ]
+}

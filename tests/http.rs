@@ -235,31 +235,67 @@ async fn schema_describes_every_served_field() {
     let app = app();
     let res = send(&app, Method::GET, "/_schema", None).await;
     let resources = res.body["resources"].as_array().unwrap();
-    let names: Vec<_> = resources
-        .iter()
-        .map(|r| r["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["customers", "prefs", "orders", "spend"]);
     let kinds: Vec<_> = resources
         .iter()
-        .map(|r| r["kind"].as_str().unwrap())
+        .map(|r| (r["name"].as_str().unwrap(), r["kind"].as_str().unwrap()))
         .collect();
-    assert_eq!(kinds, ["table", "table", "events", "map_view"]);
-
-    let ops = |i: usize| &resources[i]["ops"];
-    assert_eq!(ops(0)["insert"], true, "Table<Id<V>, V> mints");
-    assert_eq!(ops(1)["insert"], false, "Table<String, _> doesn't");
     assert_eq!(
-        ops(2),
-        &json!({"list": true, "get": true, "insert": true, "upsert": false, "remove": false})
+        kinds,
+        [
+            ("customers", "table"),
+            ("prefs", "table"),
+            ("orders", "events"),
+            ("tags", "set"),
+            ("motd", "cell"),
+            ("stock", "bag"),
+            ("spend", "map_view"),
+            ("ranked", "ordered_view"),
+            ("tags_by_len", "group_view"),
+            ("order_count", "value_view"),
+            ("names", "search_view"),
+        ]
     );
-    assert_eq!(ops(3)["upsert"], false);
+
+    let ops = |i: usize| -> Vec<String> {
+        resources[i]["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {}",
+                    r["method"].as_str().unwrap(),
+                    r["op"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        ops(0),
+        [
+            "GET list",
+            "GET get",
+            "PUT upsert",
+            "DELETE remove",
+            "POST insert"
+        ],
+        "Table<Id<V>, V> mints"
+    );
+    assert_eq!(
+        ops(1),
+        ["GET list", "GET get", "PUT upsert", "DELETE remove"],
+        "Table<String, _> doesn't"
+    );
+    assert_eq!(ops(6), ["GET list", "GET get"], "views are read-only");
 
     assert_eq!(resources[1]["key"]["type"], "string");
     assert_eq!(
-        resources[2]["value"]["properties"]["customer"]["type"],
-        "integer"
+        resources[0]["value"]["$ref"],
+        "#/components/schemas/Customer"
     );
+    assert_eq!(resources[3]["description"], "Labels on the shop.");
+    let order = &res.body["components"]["schemas"]["Order"];
+    assert_eq!(order["properties"]["customer"]["type"], "integer");
     assert_eq!(
         send(&app, Method::GET, "/_health", None).await.status,
         StatusCode::OK

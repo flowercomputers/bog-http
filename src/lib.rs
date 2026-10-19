@@ -22,23 +22,38 @@
 //! ```
 //!
 //! # Routes
-//! For a resource `n`, as its kind allows:
+//! Each kind mounts the routes its operations allow, under `/{field}`:
 //!
-//! | route | |
-//! |---|---|
-//! | `GET /n?limit=&after=&order=` | a page of `{key, value}` rows, keyset-paginated |
-//! | `GET /n/{key}` | one row's value, or 404 |
-//! | `POST /n` | append (events) or insert minting an id (`Table<Id<V>, V>`): `201` |
-//! | `PUT /n/{key}` | upsert: `201` if created, else `200` |
-//! | `DELETE /n/{key}` | remove: `{removed}` |
-//! | `GET /_schema` | every resource's kind, key and value JSON Schemas, ops |
-//! | `GET /_health` | liveness |
+//! | kind | reads | writes |
+//! |---|---|---|
+//! | `Table<K, V>` | `GET /n` page of `{key, value}`, `GET /n/{key}` | `PUT /n/{key}`, `DELETE /n/{key}`; `POST /n` mints when `K = Id<V>` |
+//! | `Events<V>` | as a table | `POST /n` appends, minting the id |
+//! | `Set<T>` | `GET /n` page of members, `GET /n/{member}` | `PUT`, `DELETE /n/{member}` |
+//! | `Cell<V>` | `GET /n` (`null` while unset) | `PUT /n`, `DELETE /n` |
+//! | `Bag<T>` | `GET /n` page of `{value, count}`, `GET /n/{value}` count | `POST /n {value, times}`, `DELETE /n/{value}?times=` |
+//! | `MapView<K, V>` | as a table | |
+//! | `OrderedView<K, V>` | as a table, plus `?by=value&min=&max=` | |
+//! | `GroupView<K, V>` | `GET /n` page of `{key, value, count}`, `GET /n/{key}` page of a key's values | |
+//! | `ValueView<V>` | `GET /n` | |
+//! | `SearchView<D>` | `GET /n?q=&k=` hits, `GET /n/complete?prefix=&k=` | |
+//!
+//! Listings take `?limit=` (≤ 1000), `?order=asc|desc`, and `?after=`,
+//! the opaque `next` cursor of the previous page (keyset pagination).
+//! Meta routes: `GET /openapi.json` (OpenAPI 3.1), `GET /_schema` (the
+//! same descriptions, compact), `GET /_health`.
 //!
 //! Successes are `{"epoch", "data"}` with a `fold-epoch` header; errors
 //! are RFC 9457 `application/problem+json` (see [`Problem`]). Keys in
 //! paths parse as JSON, falling back to a bare string (see
 //! [`wire::parse_key`]).
+//!
+//! # Serving your own kinds
+//! A source or view type from outside fold serves by implementing
+//! [`Resource`] (and [`SourceResource`] if writable): describe its
+//! [`Route`]s, answer reads from its facade, stage writes for the writer
+//! thread. The derive needs nothing more.
 
+mod openapi;
 mod problem;
 mod resource;
 mod resources;
@@ -47,8 +62,11 @@ pub mod wire;
 
 pub use problem::{IntoProblem, PROBLEM_JSON, Problem};
 pub use resource::{
-    Apply, Describe, Entry, Ops, ReadOp, Resource, SourceResource, Stage, Wire, WriteOp, Written,
-    schema_of,
+    Apply, Call, Describe, Entry, MINT_OP, Method, Mint, Resource, Route, SourceResource, Stage,
+    Wire, Written, inline_schema, schema_in,
+};
+pub use resources::{
+    BagAdd, BagRemove, By, CompleteParams, Completion, Hit, OrderedParams, SearchParams,
 };
 pub use server::Server;
 
@@ -72,7 +90,7 @@ pub mod __private {
     use fold::Id;
     use fold::schema::{Data, Error, SourceDecl, Table};
 
-    use crate::{Stage, Wire};
+    use crate::{Mint, Wire};
 
     pub use fold;
 
@@ -86,21 +104,24 @@ pub mod __private {
     }
 
     pub trait MintById<D: SourceDecl> {
-        fn mint<E: Error>(&self) -> Option<Stage<D::Write<E>, E>>;
+        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>>;
     }
 
     impl<V: Data + Wire> MintById<Table<Id<V>, V>> for &Probe<Table<Id<V>, V>> {
-        fn mint<E: Error>(&self) -> Option<Stage<<Table<Id<V>, V> as SourceDecl>::Write<E>, E>> {
-            Some(crate::resources::mint_table::<V, E>)
+        fn mint<E: Error>(&self) -> Option<Mint<<Table<Id<V>, V> as SourceDecl>::Write<E>, E>> {
+            Some(Mint {
+                stage: crate::resources::mint_table::<V, E>,
+                route: crate::resources::mint_table_route::<V>,
+            })
         }
     }
 
     pub trait MintNone<D: SourceDecl> {
-        fn mint<E: Error>(&self) -> Option<Stage<D::Write<E>, E>>;
+        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>>;
     }
 
     impl<D: SourceDecl> MintNone<D> for Probe<D> {
-        fn mint<E: Error>(&self) -> Option<Stage<D::Write<E>, E>> {
+        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>> {
             None
         }
     }
