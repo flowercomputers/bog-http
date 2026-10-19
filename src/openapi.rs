@@ -12,6 +12,8 @@ pub(crate) struct Info<'a> {
     pub title: &'a str,
     pub version: &'a str,
     pub description: Option<&'a str>,
+    /// Every route but `/_health` needs a bearer token.
+    pub bearer: bool,
 }
 
 /// The whole document. `schemas` are the shared components every
@@ -70,7 +72,7 @@ pub(crate) fn document(
         ])
         .collect();
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": info_obj,
         // Relative: wherever the router is mounted.
@@ -104,7 +106,33 @@ pub(crate) fn document(
                 },
             },
         },
-    })
+    });
+    if info.bearer {
+        doc["components"]["securitySchemes"] = json!({
+            "bearer": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "`Authorization: Bearer <token>`; where headers can't be set (`EventSource`), `?access_token=<token>`.",
+            },
+        });
+        doc["security"] = json!([{ "bearer": [] }]);
+        doc["paths"]["/_health"]["get"]["security"] = json!([]);
+        doc["components"]["responses"]["Unauthorized"] = problem("No valid bearer token.");
+        if let Some(paths) = doc["paths"].as_object_mut() {
+            for (path, item) in paths.iter_mut() {
+                if path == "/_health" {
+                    continue;
+                }
+                if let Some(ops) = item.as_object_mut() {
+                    for op in ops.values_mut() {
+                        op["responses"]["401"] =
+                            json!({ "$ref": "#/components/responses/Unauthorized" });
+                    }
+                }
+            }
+        }
+    }
+    doc
 }
 
 fn operation(id: &str, tag: &str, description: Option<&str>, r: &Route) -> Value {

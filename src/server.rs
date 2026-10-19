@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Semaphore, broadcast, watch};
 
 use crate::custom::{CUSTOM_OP, Custom, Handler, TxFn, check_path};
+use crate::guard::Guard;
 use crate::live::{Change, Hubs};
 use crate::openapi::{self, Info};
 use crate::resource::{Call, Describe, Entry, Method, Route, Written};
@@ -53,6 +54,7 @@ pub struct Server<S: Serve> {
     max_pending_writes: usize,
     body_limit: usize,
     closing: watch::Sender<bool>,
+    guard: Guard,
 }
 
 /// Ends a server's live streams, so a graceful shutdown can finish:
@@ -115,7 +117,33 @@ impl<S: Serve> Server<S> {
             max_pending_writes: 1024,
             body_limit: 2 << 20,
             closing: watch::Sender::new(false),
+            guard: Guard::default(),
         }
+    }
+
+    /// Require `Authorization: Bearer <token>` on every request but
+    /// `/_health`. Clients that can't set headers (`EventSource`) may
+    /// pass `?access_token=<token>` instead; it's removed before routing.
+    /// Documented in OpenAPI as a bearer security scheme.
+    pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
+        let token: String = token.into();
+        assert!(
+            !token.is_empty(),
+            "an empty bearer token admits no one meaningfully"
+        );
+        self.guard.token = Some(token.into());
+        self
+    }
+
+    /// Answer only requests whose `Host` names one of `hosts` (any port):
+    /// the defense against DNS rebinding, where a web page reaches a
+    /// local server under its own domain. [`serve`](Server::serve) sets
+    /// `localhost`, `127.0.0.1`, and `[::1]` itself when it binds a
+    /// loopback address and this wasn't called.
+    pub fn allowed_hosts<'a>(mut self, hosts: impl IntoIterator<Item = &'a str>) -> Self {
+        let hosts: Vec<String> = hosts.into_iter().map(|h| h.to_ascii_lowercase()).collect();
+        self.guard.hosts = Some(hosts.into());
+        self
     }
 
     /// A handle that ends this server's live streams; see [`Closer`].
@@ -235,9 +263,14 @@ impl<S: Serve> Server<S> {
         layer: impl FnOnce(Router) -> Router,
     ) -> std::io::Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        let writer = self.writer.clone();
-        let closer = self.closer();
-        let app = layer(self.into_router());
+        let mut this = self;
+        if this.guard.hosts.is_none() && listener.local_addr()?.ip().is_loopback() {
+            this.guard.hosts = Some(crate::guard::loopback_hosts().into());
+        }
+        let this = this;
+        let writer = this.writer.clone();
+        let closer = this.closer();
+        let app = layer(this.into_router());
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 stop_signal().await;
@@ -261,6 +294,7 @@ impl<S: Serve> Server<S> {
             title: &self.title,
             version: &self.version,
             description: self.description.as_deref(),
+            bearer: self.guard.token.is_some(),
         }
     }
 
@@ -278,6 +312,7 @@ impl<S: Serve> Server<S> {
         let schema = json!({ "resources": &described, "components": { "schemas": schemas } });
         let committed = watch::Sender::new(self.reader.snapshot().frontier().outer);
         let body_limit = self.body_limit;
+        let guard = self.guard.clone();
         let shared = Arc::new(Shared {
             reader: self.reader,
             writer: self.writer,
@@ -381,13 +416,21 @@ impl<S: Serve> Server<S> {
         for (path, (method_router, _)) in mounted.0 {
             router = router.route(&path, method_router);
         }
-        router
+        let router: Router = router
             .fallback(|uri: Uri| async move {
                 Problem::not_found(format!("no route for {}", uri.path()))
             })
             .layer(DefaultBodyLimit::max(body_limit))
             .layer(axum::middleware::map_response(problem_status))
-            .with_state(shared)
+            .with_state(shared);
+        if guard.is_open() {
+            router
+        } else {
+            router.layer(axum::middleware::from_fn_with_state(
+                guard,
+                crate::guard::guard,
+            ))
+        }
     }
 }
 

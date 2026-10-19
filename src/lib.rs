@@ -94,6 +94,7 @@
 //! thread. The derive needs nothing more.
 
 mod custom;
+mod guard;
 mod live;
 mod openapi;
 mod problem;
@@ -104,6 +105,7 @@ mod tx;
 pub mod wire;
 
 pub use custom::NoParams;
+pub use guard::ACCESS_TOKEN_PARAM;
 
 pub use problem::{IntoProblem, PROBLEM_JSON, Problem};
 pub use resource::{
