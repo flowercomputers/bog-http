@@ -10,6 +10,19 @@
         }
       }
     },
+    "parameters": {
+      "MinEpoch": {
+        "description": "Answer from a snapshot at or after this epoch, waiting briefly for it: read your own writes by passing the epoch a write returned.",
+        "in": "header",
+        "name": "fold-min-epoch",
+        "required": false,
+        "schema": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      }
+    },
     "responses": {
       "BadRequest": {
         "content": {
@@ -31,6 +44,16 @@
         },
         "description": "Nothing at this key, or no such route."
       },
+      "PayloadTooLarge": {
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        },
+        "description": "The body exceeds the server's limit."
+      },
       "Rejected": {
         "content": {
           "application/problem+json": {
@@ -49,7 +72,7 @@
             }
           }
         },
-        "description": "The store can't take writes right now (I/O failure, writer stopped)."
+        "description": "Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."
       },
       "UnsupportedMediaType": {
         "content": {
@@ -385,6 +408,15 @@
               "null"
             ]
           },
+          "index": {
+            "description": "For `/_tx`: the index of the operation at fault.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "status": {
             "format": "uint16",
             "maximum": 65535,
@@ -395,7 +427,7 @@
             "type": "string"
           },
           "type": {
-            "description": "Stable, machine-readable: `bad-request`, `not-found`,\n`method-not-allowed`, `unsupported-media-type`, `rejected`,\n`unavailable`, `internal`.",
+            "description": "Stable, machine-readable: `bad-request`, `not-found`,\n`method-not-allowed`, `unsupported-media-type`, `rejected`,\n`overloaded`, `epoch-not-reached`, `unavailable`, `internal`.",
             "type": "string"
           }
         },
@@ -541,6 +573,376 @@
         ]
       }
     },
+    "/_tx": {
+      "post": {
+        "description": "All or nothing: one epoch, and any refusal or malformed operation applies none of them (a malformed one is named by `index`). Each operation sees the ones before it. At most 1000 operations.",
+        "operationId": "transaction",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "description": "Insert or replace the value at a key",
+                      "properties": {
+                        "body": {
+                          "$ref": "#/components/schemas/Customer"
+                        },
+                        "key": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "op": {
+                          "const": "upsert"
+                        },
+                        "resource": {
+                          "const": "customers"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key",
+                        "body"
+                      ],
+                      "title": "customers_upsert",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Remove the row at a key",
+                      "properties": {
+                        "key": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "op": {
+                          "const": "remove"
+                        },
+                        "resource": {
+                          "const": "customers"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key"
+                      ],
+                      "title": "customers_remove",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Insert a row, minting its id",
+                      "properties": {
+                        "body": {
+                          "$ref": "#/components/schemas/Customer"
+                        },
+                        "op": {
+                          "const": "insert"
+                        },
+                        "resource": {
+                          "const": "customers"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "body"
+                      ],
+                      "title": "customers_insert",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Insert or replace the value at a key",
+                      "properties": {
+                        "body": {
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "key": {
+                          "type": "string"
+                        },
+                        "op": {
+                          "const": "upsert"
+                        },
+                        "resource": {
+                          "const": "prefs"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key",
+                        "body"
+                      ],
+                      "title": "prefs_upsert",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Remove the row at a key",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "op": {
+                          "const": "remove"
+                        },
+                        "resource": {
+                          "const": "prefs"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key"
+                      ],
+                      "title": "prefs_remove",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Append an event, minting its id",
+                      "properties": {
+                        "body": {
+                          "$ref": "#/components/schemas/Order"
+                        },
+                        "op": {
+                          "const": "append"
+                        },
+                        "resource": {
+                          "const": "orders"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "body"
+                      ],
+                      "title": "orders_append",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Add a member",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "op": {
+                          "const": "insert"
+                        },
+                        "resource": {
+                          "const": "tags"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key"
+                      ],
+                      "title": "tags_insert",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Remove a member",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "op": {
+                          "const": "remove"
+                        },
+                        "resource": {
+                          "const": "tags"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key"
+                      ],
+                      "title": "tags_remove",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Set the value",
+                      "properties": {
+                        "body": {
+                          "type": "string"
+                        },
+                        "op": {
+                          "const": "set"
+                        },
+                        "resource": {
+                          "const": "motd"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "body"
+                      ],
+                      "title": "motd_set",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Unset the value",
+                      "properties": {
+                        "op": {
+                          "const": "clear"
+                        },
+                        "resource": {
+                          "const": "motd"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op"
+                      ],
+                      "title": "motd_clear",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Add copies of a value",
+                      "properties": {
+                        "body": {
+                          "$ref": "#/components/schemas/BagAdd_string"
+                        },
+                        "op": {
+                          "const": "add"
+                        },
+                        "resource": {
+                          "const": "stock"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "body"
+                      ],
+                      "title": "stock_add",
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Remove copies of a value",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "op": {
+                          "const": "remove"
+                        },
+                        "query": {
+                          "additionalProperties": false,
+                          "description": "`DELETE /n/{key}`: remove copies of a value.",
+                          "properties": {
+                            "times": {
+                              "description": "How many copies to remove, at most as many as there are; 1 by\ndefault.",
+                              "format": "int",
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "resource": {
+                          "const": "stock"
+                        }
+                      },
+                      "required": [
+                        "resource",
+                        "op",
+                        "key"
+                      ],
+                      "title": "stock_remove",
+                      "type": "object"
+                    }
+                  ]
+                },
+                "maxItems": 1000,
+                "minItems": 1,
+                "type": "array"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "results": {
+                          "description": "Each operation's `data`, in order.",
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "results"
+                      ],
+                      "type": "object"
+                    },
+                    "epoch": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success.",
+            "headers": {
+              "fold-epoch": {
+                "$ref": "#/components/headers/FoldEpoch"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Rejected"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "Apply many writes, across any sources, as one transaction",
+        "tags": [
+          "transactions"
+        ]
+      }
+    },
     "/customers": {
       "get": {
         "operationId": "customers_list",
@@ -578,6 +980,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -612,6 +1017,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List rows in key order",
@@ -663,6 +1071,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
           },
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
@@ -754,6 +1165,9 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -791,6 +1205,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value at a key",
@@ -885,6 +1302,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
           },
@@ -951,6 +1371,11 @@
       },
       "get": {
         "operationId": "motd_get",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MinEpoch"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -986,6 +1411,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value: `null` while unset",
@@ -1067,6 +1495,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
           },
@@ -1107,6 +1538,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1144,6 +1578,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Full-text search, best first",
@@ -1176,6 +1613,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1213,6 +1653,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Complete a term, most common first",
@@ -1245,6 +1688,11 @@
     "/order_count": {
       "get": {
         "operationId": "order_count_get",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MinEpoch"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1281,6 +1729,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value: `null` until the view has one",
@@ -1326,6 +1777,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1360,6 +1814,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List rows in key order",
@@ -1412,6 +1869,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
           },
@@ -1442,6 +1902,9 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1479,6 +1942,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value at a key",
@@ -1524,6 +1990,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1558,6 +2027,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List rows in key order",
@@ -1636,6 +2108,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1675,6 +2150,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value at a key",
@@ -1769,6 +2247,9 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
           },
@@ -1854,6 +2335,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1888,6 +2372,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List rows by key, or by value with `by=value`",
@@ -1911,6 +2398,9 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -1949,6 +2439,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value at a key",
@@ -1995,6 +2488,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2029,6 +2525,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List rows in key order",
@@ -2052,6 +2551,9 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2090,6 +2592,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Get the value at a key",
@@ -2135,6 +2640,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2169,6 +2677,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List values in order, with their counts",
@@ -2220,6 +2731,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
           },
           "415": {
             "$ref": "#/components/responses/UnsupportedMediaType"
@@ -2317,6 +2831,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2352,6 +2869,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Count copies of a value (0 if none)",
@@ -2398,6 +2918,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2432,6 +2955,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List members in order",
@@ -2512,6 +3038,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2549,6 +3078,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "Test membership: `true`, or 404",
@@ -2682,6 +3214,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2716,6 +3251,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List every (key, value) pair, with counts",
@@ -2772,6 +3310,9 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/MinEpoch"
           }
         ],
         "responses": {
@@ -2806,6 +3347,9 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
           }
         },
         "summary": "List a key's values, with counts",
@@ -2857,6 +3401,14 @@
     {
       "description": "Customers by name.",
       "name": "names"
+    },
+    {
+      "description": "Application routes.",
+      "name": "custom"
+    },
+    {
+      "description": "Many writes as one transaction.",
+      "name": "transactions"
     },
     {
       "description": "Introspection and health.",

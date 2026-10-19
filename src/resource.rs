@@ -6,6 +6,8 @@
 //! mounts the router, fills `/_schema`, and generates the OpenAPI
 //! document, so the three can't drift apart.
 
+use std::borrow::Cow;
+
 use axum::body::Bytes;
 use fold::schema::Error;
 use fold::{Declare, SourceDecl, WriteOf};
@@ -59,11 +61,11 @@ pub struct Route {
     pub method: Method,
     /// Relative to the resource: `""`, `"/{key}"`, or a static suffix
     /// such as `"/complete"`. Only `{key}` may be a parameter.
-    pub path: &'static str,
+    pub path: Cow<'static, str>,
     /// Identifies the operation to [`Resource::answer`] or
     /// [`SourceResource::stage`].
     pub op: &'static str,
-    pub summary: &'static str,
+    pub summary: Cow<'static, str>,
     /// JSON Schema of the `{key}` path parameter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Value>,
@@ -84,15 +86,15 @@ pub struct Route {
 impl Route {
     pub fn new(
         method: Method,
-        path: &'static str,
+        path: impl Into<Cow<'static, str>>,
         op: &'static str,
-        summary: &'static str,
+        summary: impl Into<Cow<'static, str>>,
     ) -> Self {
         Route {
             method,
-            path,
+            path: path.into(),
             op,
-            summary,
+            summary: summary.into(),
             key: None,
             query: None,
             body: None,
@@ -102,19 +104,35 @@ impl Route {
         }
     }
 
-    pub fn get(path: &'static str, op: &'static str, summary: &'static str) -> Self {
+    pub fn get(
+        path: impl Into<Cow<'static, str>>,
+        op: &'static str,
+        summary: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Route::new(Method::Get, path, op, summary)
     }
 
-    pub fn post(path: &'static str, op: &'static str, summary: &'static str) -> Self {
+    pub fn post(
+        path: impl Into<Cow<'static, str>>,
+        op: &'static str,
+        summary: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Route::new(Method::Post, path, op, summary)
     }
 
-    pub fn put(path: &'static str, op: &'static str, summary: &'static str) -> Self {
+    pub fn put(
+        path: impl Into<Cow<'static, str>>,
+        op: &'static str,
+        summary: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Route::new(Method::Put, path, op, summary)
     }
 
-    pub fn delete(path: &'static str, op: &'static str, summary: &'static str) -> Self {
+    pub fn delete(
+        path: impl Into<Cow<'static, str>>,
+        op: &'static str,
+        summary: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Route::new(Method::Delete, path, op, summary)
     }
 

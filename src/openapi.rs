@@ -4,6 +4,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::resource::{Describe, Method, Route};
+use crate::server::MIN_EPOCH_HEADER;
+use crate::tx::MAX_TX_OPS;
 use crate::wire::EPOCH_HEADER;
 
 pub(crate) struct Info<'a> {
@@ -17,18 +19,35 @@ pub(crate) struct Info<'a> {
 pub(crate) fn document(
     info: &Info<'_>,
     resources: &[Describe],
+    custom: &[Route],
     schemas: Map<String, Value>,
 ) -> Value {
     let mut paths = Map::new();
+    let mut put = |path: String, r: &Route, op: Value| {
+        let item = paths
+            .entry(path)
+            .or_insert_with(|| Value::Object(Map::new()));
+        item[r.method.as_str()] = op;
+    };
     for d in resources {
         for r in &d.routes {
-            let path = format!("/{}{}", d.name, r.path);
-            let item = paths
-                .entry(path)
-                .or_insert_with(|| Value::Object(Map::new()));
-            item[r.method.as_str()] = operation(d, r);
+            let id = format!("{}_{}", d.name, r.op);
+            put(
+                format!("/{}{}", d.name, r.path),
+                r,
+                operation(&id, &d.name, d.description.as_deref(), r),
+            );
         }
     }
+    for r in custom {
+        let id = format!(
+            "{}{}",
+            r.method.as_str(),
+            r.path.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        );
+        put(r.path.to_string(), r, operation(&id, "custom", None, r));
+    }
+    paths.insert("/_tx".into(), transaction(resources));
     meta_paths(&mut paths);
 
     let mut info_obj = json!({ "title": info.title, "version": info.version });
@@ -44,7 +63,11 @@ pub(crate) fn document(
             }
             tag
         })
-        .chain([json!({ "name": "meta", "description": "Introspection and health." })])
+        .chain([
+            json!({ "name": "custom", "description": "Application routes." }),
+            json!({ "name": "transactions", "description": "Many writes as one transaction." }),
+            json!({ "name": "meta", "description": "Introspection and health." }),
+        ])
         .collect();
 
     json!({
@@ -61,7 +84,17 @@ pub(crate) fn document(
                 "NotFound": problem("Nothing at this key, or no such route."),
                 "UnsupportedMediaType": problem("The body isn't `application/json`."),
                 "Rejected": problem("A schema constraint refused the write; `at` names the source or view that refused. Nothing was applied."),
-                "Unavailable": problem("The store can't take writes right now (I/O failure, writer stopped)."),
+                "Unavailable": problem("Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."),
+                "PayloadTooLarge": problem("The body exceeds the server's limit."),
+            },
+            "parameters": {
+                "MinEpoch": {
+                    "name": MIN_EPOCH_HEADER,
+                    "in": "header",
+                    "required": false,
+                    "description": "Answer from a snapshot at or after this epoch, waiting briefly for it: read your own writes by passing the epoch a write returned.",
+                    "schema": { "type": "integer", "format": "uint64", "minimum": 0 },
+                },
             },
             "headers": {
                 "FoldEpoch": {
@@ -73,13 +106,13 @@ pub(crate) fn document(
     })
 }
 
-fn operation(d: &Describe, r: &Route) -> Value {
+fn operation(id: &str, tag: &str, description: Option<&str>, r: &Route) -> Value {
     let mut op = json!({
-        "operationId": format!("{}_{}", d.name, r.op),
+        "operationId": id,
         "summary": r.summary,
-        "tags": [d.name],
+        "tags": [tag],
     });
-    if let Some(description) = &d.description {
+    if let Some(description) = description {
         op["description"] = json!(description);
     }
 
@@ -95,6 +128,9 @@ fn operation(d: &Describe, r: &Route) -> Value {
     }
     if let Some(query) = &r.query {
         params.extend(query_params(query));
+    }
+    if r.method.is_read() {
+        params.push(json!({ "$ref": "#/components/parameters/MinEpoch" }));
     }
     if !params.is_empty() {
         op["parameters"] = Value::Array(params);
@@ -127,14 +163,95 @@ fn operation(d: &Describe, r: &Route) -> Value {
         refer("404", "NotFound");
     }
     if r.body.is_some() {
+        refer("413", "PayloadTooLarge");
         refer("415", "UnsupportedMediaType");
     }
     if !r.method.is_read() {
         refer("422", "Rejected");
-        refer("503", "Unavailable");
     }
+    refer("503", "Unavailable");
     op["responses"] = Value::Object(responses);
     op
+}
+
+/// `POST /_tx`: its body is an array of every write route, addressed by
+/// resource and op, as a `oneOf` clients can generate types from.
+fn transaction(resources: &[Describe]) -> Value {
+    let mut variants = Vec::new();
+    for d in resources {
+        for r in d.routes.iter().filter(|r| !r.method.is_read()) {
+            let mut props = Map::new();
+            let mut required = vec![json!("resource"), json!("op")];
+            props.insert("resource".into(), json!({ "const": d.name }));
+            props.insert("op".into(), json!({ "const": r.op }));
+            if let Some(key) = &r.key {
+                props.insert("key".into(), key.clone());
+                required.push(json!("key"));
+            }
+            if let Some(body) = &r.body {
+                props.insert("body".into(), body.clone());
+                required.push(json!("body"));
+            }
+            if let Some(query) = &r.query {
+                let mut query = query.clone();
+                if let Some(o) = query.as_object_mut() {
+                    o.remove("title");
+                    o.remove("$schema");
+                }
+                props.insert("query".into(), query);
+            }
+            variants.push(json!({
+                "title": format!("{}_{}", d.name, r.op),
+                "description": r.summary,
+                "type": "object",
+                "required": required,
+                "properties": props,
+                "additionalProperties": false,
+            }));
+        }
+    }
+    let results = json!({
+        "type": "object",
+        "required": ["results"],
+        "properties": {
+            "results": {
+                "type": "array",
+                "description": "Each operation's `data`, in order.",
+            },
+        },
+    });
+    let mut op = json!({
+        "operationId": "transaction",
+        "summary": "Apply many writes, across any sources, as one transaction",
+        "description": format!("All or nothing: one epoch, and any refusal or malformed operation applies none of them (a malformed one is named by `index`). Each operation sees the ones before it. At most {MAX_TX_OPS} operations."),
+        "tags": ["transactions"],
+        "requestBody": {
+            "required": true,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_TX_OPS,
+                        "items": { "oneOf": variants },
+                    },
+                },
+            },
+        },
+        "responses": {
+            "200": success(&results),
+        },
+    });
+    for (code, name) in [
+        ("400", "BadRequest"),
+        ("413", "PayloadTooLarge"),
+        ("415", "UnsupportedMediaType"),
+        ("422", "Rejected"),
+        ("503", "Unavailable"),
+    ] {
+        op["responses"][code] = json!({ "$ref": format!("#/components/responses/{name}") });
+    }
+    json!({ "post": op })
 }
 
 /// A success response: the `{epoch, data}` envelope around `data`.

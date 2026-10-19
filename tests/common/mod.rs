@@ -33,29 +33,29 @@ pub struct Order {
 
 #[derive(Schema, Serve)]
 pub struct Shop {
-    customers: Table<Id<Customer>, Customer>,
-    prefs: Table<String, u32>,
-    orders: Events<Order>,
+    pub customers: Table<Id<Customer>, Customer>,
+    pub prefs: Table<String, u32>,
+    pub orders: Events<Order>,
     /// Labels on the shop.
-    tags: Set<String>,
-    motd: Cell<String>,
-    stock: Bag<String>,
+    pub tags: Set<String>,
+    pub motd: Cell<String>,
+    pub stock: Bag<String>,
     /// Customer → total spend.
     #[view]
-    spend: MapView<Id<Customer>, isize>,
+    pub spend: MapView<Id<Customer>, isize>,
     /// Customers by spend.
     #[view]
-    ranked: OrderedView<Id<Customer>, isize>,
+    pub ranked: OrderedView<Id<Customer>, isize>,
     #[view]
-    tags_by_len: GroupView<usize, String>,
+    pub tags_by_len: GroupView<usize, String>,
     #[view]
-    order_count: ValueView<isize>,
+    pub order_count: ValueView<isize>,
     /// Customers by name.
     #[view]
-    names: SearchView<Id<Customer>>,
+    pub names: SearchView<Id<Customer>>,
     #[view]
     #[serve(skip)]
-    by_region: MapView<String, isize>,
+    pub by_region: MapView<String, isize>,
 }
 
 impl Declare for Shop {
@@ -76,8 +76,12 @@ impl Declare for Shop {
     }
 }
 
+pub fn server() -> fold_http::Server<Shop> {
+    fold_http::Server::new(Shop::memory().build().unwrap())
+}
+
 pub fn app() -> Router {
-    fold_http::Server::new(Shop::memory().build().unwrap()).into_router()
+    server().into_router()
 }
 
 pub struct Res {
@@ -104,7 +108,21 @@ impl Res {
 
 /// One request against the router, in process.
 pub async fn send(app: &Router, method: Method, path: &str, body: Option<Value>) -> Res {
+    send_with(app, method, path, body, &[]).await
+}
+
+/// [`send`] with extra request headers.
+pub async fn send_with(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> Res {
     let mut req = Request::builder().method(method).uri(path);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
     let body = match body {
         Some(json) => {
             req = req.header(header::CONTENT_TYPE, "application/json");

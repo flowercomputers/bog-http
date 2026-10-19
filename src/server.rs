@@ -3,26 +3,36 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as Slot;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::PathRejection;
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodFilter, MethodRouter, get};
-use fold::{Db, Reader, Writer};
-use schemars::SchemaGenerator;
+use axum::routing::{MethodFilter, MethodRouter, get, post};
+use fold::{Db, Reader, Tx, Writer};
 use schemars::generate::SchemaSettings;
+use schemars::{JsonSchema, SchemaGenerator};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tokio::sync::{Semaphore, watch};
 
+use crate::custom::{CUSTOM_OP, Custom, Handler, TxFn, check_path};
 use crate::openapi::{self, Info};
-use crate::resource::{Call, Describe, Entry, Method};
-use crate::wire::{require_json, respond};
+use crate::resource::{Call, Describe, Entry, Method, Route, Written};
+use crate::tx::{self, TxOp};
+use crate::wire::{parse_body, require_json, respond, to_json};
 use crate::{IntoProblem, Problem, Serve};
 
-/// Serves one database: every resource its schema exposes, plus the
-/// `/_`-prefixed meta routes and `/openapi.json`.
+/// The request header naming the least epoch a read must reflect.
+pub const MIN_EPOCH_HEADER: &str = "fold-min-epoch";
+
+/// Serves one database: every resource its schema exposes, custom
+/// routes, `POST /_tx`, the `/_`-prefixed meta routes, and
+/// `/openapi.json`.
 ///
 /// The library never owns a runtime or a listener: [`into_router`]
 /// returns a plain [`Router`] to nest, layer, and serve however the
@@ -35,6 +45,10 @@ pub struct Server<S: Serve> {
     title: String,
     version: String,
     description: Option<String>,
+    custom: Vec<Custom<S>>,
+    min_epoch_wait: Duration,
+    max_pending_writes: usize,
+    body_limit: usize,
 }
 
 struct Shared<S: Serve> {
@@ -42,8 +56,15 @@ struct Shared<S: Serve> {
     writer: Writer<S>,
     entries: Vec<Entry<S>>,
     described: Vec<Describe>,
+    custom: Vec<Custom<S>>,
+    custom_routes: Vec<Route>,
     openapi: Value,
     schema: Value,
+    /// Admission control: one permit per write in flight.
+    permits: Arc<Semaphore>,
+    /// The newest epoch a write through this server committed.
+    committed: watch::Sender<u64>,
+    min_epoch_wait: Duration,
 }
 
 type St<S> = State<Arc<Shared<S>>>;
@@ -70,6 +91,10 @@ impl<S: Serve> Server<S> {
             title: name.rsplit("::").next().unwrap_or(name).to_owned(),
             version: "0".to_owned(),
             description: None,
+            custom: Vec::new(),
+            min_epoch_wait: Duration::from_secs(5),
+            max_pending_writes: 1024,
+            body_limit: 2 << 20,
         }
     }
 
@@ -90,11 +115,92 @@ impl<S: Serve> Server<S> {
         self
     }
 
+    /// How long a read with `fold-min-epoch` waits for that epoch before
+    /// answering `503 epoch-not-reached`. 5 s by default.
+    pub fn min_epoch_wait(mut self, wait: Duration) -> Self {
+        self.min_epoch_wait = wait;
+        self
+    }
+
+    /// How many writes may be queued or running at once; beyond that a
+    /// write is refused with `503 overloaded` and `Retry-After`, rather
+    /// than queueing without bound. 1024 by default; 0 makes the server
+    /// read-only.
+    pub fn max_pending_writes(mut self, n: usize) -> Self {
+        self.max_pending_writes = n;
+        self
+    }
+
+    /// The largest request body accepted, in bytes. 2 MiB by default.
+    pub fn body_limit(mut self, bytes: usize) -> Self {
+        self.body_limit = bytes;
+        self
+    }
+
+    /// A custom read: `GET path`, answered by `f` from one snapshot with
+    /// the decoded query `Q` (use [`NoParams`](crate::NoParams) for
+    /// none). Documented in OpenAPI from `Q` and `R`.
+    ///
+    /// # Panics
+    /// If `path` is `/_`-prefixed, has parameters, or doesn't start
+    /// with `/`.
+    pub fn get<Q, R, F>(mut self, path: &str, summary: &str, f: F) -> Self
+    where
+        Q: DeserializeOwned + JsonSchema + 'static,
+        R: Serialize + JsonSchema + 'static,
+        F: Fn(&S::Read, Q) -> Result<R, Problem> + Send + Sync + 'static,
+    {
+        check_path(path);
+        let (p, s) = (path.to_owned(), summary.to_owned());
+        self.custom.push(Custom {
+            path: path.to_owned(),
+            describe: Box::new(move |g| {
+                Route::get(p.clone(), CUSTOM_OP, s.clone())
+                    .query::<Q>()
+                    .response::<R>(g)
+            }),
+            handler: Handler::Read(Arc::new(move |r, call| to_json(&f(r, call.query()?)?))),
+        });
+        self
+    }
+
+    /// A custom write: `POST path` with a JSON body `B`, run by `f` as
+    /// one transaction. `f`'s `Err` rolls everything back and answers
+    /// through [`IntoProblem`]; so do the schema's constraints.
+    ///
+    /// # Panics
+    /// As [`get`](Server::get).
+    pub fn post<B, R, F>(mut self, path: &str, summary: &str, f: F) -> Self
+    where
+        B: DeserializeOwned + JsonSchema + Send + 'static,
+        R: Serialize + JsonSchema + 'static,
+        F: Fn(&mut Tx<'_, S>, B) -> Result<R, S::Error> + Send + Sync + 'static,
+    {
+        check_path(path);
+        let (p, s) = (path.to_owned(), summary.to_owned());
+        let f = Arc::new(f);
+        self.custom.push(Custom {
+            path: path.to_owned(),
+            describe: Box::new(move |g| {
+                Route::post(p.clone(), CUSTOM_OP, s.clone())
+                    .body::<B>(g)
+                    .response::<R>(g)
+            }),
+            handler: Handler::Write(Arc::new(move |call| {
+                let body: B = call.body()?;
+                let f = f.clone();
+                let apply: TxFn<S> = Box::new(move |tx| Ok(Written::ok(&f(tx, body)?)));
+                Ok(apply)
+            })),
+        });
+        self
+    }
+
     /// The OpenAPI document this server will serve, without serving it.
     pub fn openapi(&self) -> Value {
         let entries = S::entries();
-        let (described, schemas) = describe(&entries);
-        openapi::document(&self.info(), &described, schemas)
+        let (described, custom, schemas) = describe(&entries, &self.custom);
+        openapi::document(&self.info(), &described, &custom, schemas)
     }
 
     fn info(&self) -> Info<'_> {
@@ -110,23 +216,30 @@ impl<S: Serve> Server<S> {
     /// # Panics
     /// If a resource name is reserved (`_`-prefixed) or not a path
     /// segment, or two routes claim the same method and path: mistakes
-    /// in the schema, caught at startup rather than per request.
+    /// in the schema or setup, caught at startup rather than per
+    /// request.
     pub fn into_router(self) -> Router {
         let entries = S::entries();
-        let (described, schemas) = describe(&entries);
-        let openapi = openapi::document(&self.info(), &described, schemas.clone());
+        let (described, custom_routes, schemas) = describe(&entries, &self.custom);
+        let openapi = openapi::document(&self.info(), &described, &custom_routes, schemas.clone());
         let schema = json!({ "resources": &described, "components": { "schemas": schemas } });
+        let committed = watch::Sender::new(self.reader.snapshot().frontier().outer);
+        let body_limit = self.body_limit;
         let shared = Arc::new(Shared {
             reader: self.reader,
             writer: self.writer,
             entries,
             described,
+            custom: self.custom,
+            custom_routes,
             openapi,
             schema,
+            permits: Arc::new(Semaphore::new(self.max_pending_writes)),
+            committed,
+            min_epoch_wait: self.min_epoch_wait,
         });
 
-        let mut mounted: BTreeMap<String, (MethodRouter<Arc<Shared<S>>>, Vec<Method>)> =
-            BTreeMap::new();
+        let mut mounted = Mounted::default();
         for (i, d) in shared.described.iter().enumerate() {
             let name = &d.name;
             assert!(
@@ -135,51 +248,50 @@ impl<S: Serve> Server<S> {
             );
             for (j, route) in d.routes.iter().enumerate() {
                 let path = format!("/{name}{}", route.path);
-                let (router, methods) = match mounted.entry(path.clone()) {
-                    Slot::Vacant(v) => v.insert((MethodRouter::new(), Vec::new())),
-                    Slot::Occupied(o) => o.into_mut(),
-                };
-                assert!(
-                    !methods.contains(&route.method),
-                    "two routes for {:?} {path}",
-                    route.method,
-                );
-                methods.push(route.method);
-                let filter = match route.method {
-                    Method::Get => MethodFilter::GET,
-                    Method::Post => MethodFilter::POST,
-                    Method::Put => MethodFilter::PUT,
-                    Method::Delete => MethodFilter::DELETE,
-                };
-                let taken = std::mem::take(router);
-                *router = if route.path.contains("{key}") {
-                    taken.on(
-                        filter,
-                        move |State(st): St<S>,
-                              key: Result<Path<String>, PathRejection>,
-                              RawQuery(query): RawQuery,
-                              headers: HeaderMap,
-                              body: Bytes| async move {
-                            match key {
-                                Ok(Path(key)) => {
-                                    dispatch(st, i, j, Some(key), query, headers, body).await
+                let keyed = route.path.contains("{key}");
+                mounted.add(&path, route.method, |r, filter| {
+                    if keyed {
+                        r.on(
+                            filter,
+                            move |State(st): St<S>,
+                                  key: Result<Path<String>, PathRejection>,
+                                  RawQuery(query): RawQuery,
+                                  headers: HeaderMap,
+                                  body: Bytes| async move {
+                                match key {
+                                    Ok(Path(key)) => {
+                                        resource(st, i, j, Some(key), query, headers, body).await
+                                    }
+                                    Err(e) => Problem::bad_request(e.body_text()).into_response(),
                                 }
-                                Err(e) => Problem::bad_request(e.body_text()).into_response(),
-                            }
-                        },
-                    )
-                } else {
-                    taken.on(
-                        filter,
-                        move |State(st): St<S>,
-                              RawQuery(query): RawQuery,
-                              headers: HeaderMap,
-                              body: Bytes| async move {
-                            dispatch(st, i, j, None, query, headers, body).await
-                        },
-                    )
-                };
+                            },
+                        )
+                    } else {
+                        r.on(
+                            filter,
+                            move |State(st): St<S>,
+                                  RawQuery(query): RawQuery,
+                                  headers: HeaderMap,
+                                  body: Bytes| async move {
+                                resource(st, i, j, None, query, headers, body).await
+                            },
+                        )
+                    }
+                });
             }
+        }
+        for (c, route) in shared.custom_routes.iter().enumerate() {
+            mounted.add(&shared.custom[c].path, route.method, |r, filter| {
+                r.on(
+                    filter,
+                    move |State(st): St<S>,
+                          RawQuery(query): RawQuery,
+                          headers: HeaderMap,
+                          body: Bytes| async move {
+                        custom(st, c, query, headers, body).await
+                    },
+                )
+            });
         }
 
         let mut router: Router<Arc<Shared<S>>> = Router::new()
@@ -194,21 +306,69 @@ impl<S: Serve> Server<S> {
             .route(
                 "/openapi.json",
                 get(|State(st): St<S>| async move { axum::Json(st.openapi.clone()) }),
+            )
+            .route(
+                "/_tx",
+                post(
+                    |State(st): St<S>, headers: HeaderMap, body: Bytes| async move {
+                        transaction(st, headers, body).await
+                    },
+                ),
             );
-        for (path, (method_router, _)) in mounted {
+        for (path, (method_router, _)) in mounted.0 {
             router = router.route(&path, method_router);
         }
         router
             .fallback(|uri: Uri| async move {
                 Problem::not_found(format!("no route for {}", uri.path()))
             })
-            .layer(axum::middleware::map_response(problem_405))
+            .layer(DefaultBodyLimit::max(body_limit))
+            .layer(axum::middleware::map_response(problem_status))
             .with_state(shared)
     }
 }
 
-/// Every entry's description, sharing one set of schema components.
-fn describe<S: Serve>(entries: &[Entry<S>]) -> (Vec<Describe>, serde_json::Map<String, Value>) {
+/// Method routers by path, refusing a second handler for a method.
+struct Mounted<S: Serve>(BTreeMap<String, (MethodRouter<Arc<Shared<S>>>, Vec<Method>)>);
+
+impl<S: Serve> Default for Mounted<S> {
+    fn default() -> Self {
+        Mounted(BTreeMap::new())
+    }
+}
+
+impl<S: Serve> Mounted<S> {
+    fn add(
+        &mut self,
+        path: &str,
+        method: Method,
+        on: impl FnOnce(MethodRouter<Arc<Shared<S>>>, MethodFilter) -> MethodRouter<Arc<Shared<S>>>,
+    ) {
+        let (router, methods) = match self.0.entry(path.to_owned()) {
+            Slot::Vacant(v) => v.insert((MethodRouter::new(), Vec::new())),
+            Slot::Occupied(o) => o.into_mut(),
+        };
+        assert!(
+            !methods.contains(&method),
+            "two routes for {method:?} {path}"
+        );
+        methods.push(method);
+        let filter = match method {
+            Method::Get => MethodFilter::GET,
+            Method::Post => MethodFilter::POST,
+            Method::Put => MethodFilter::PUT,
+            Method::Delete => MethodFilter::DELETE,
+        };
+        *router = on(std::mem::take(router), filter);
+    }
+}
+
+/// Every entry's and custom route's description, sharing one set of
+/// schema components.
+fn describe<S: Serve>(
+    entries: &[Entry<S>],
+    custom: &[Custom<S>],
+) -> (Vec<Describe>, Vec<Route>, serde_json::Map<String, Value>) {
     let mut settings = SchemaSettings::draft2020_12();
     settings.definitions_path = "/components/schemas".into();
     settings.meta_schema = None;
@@ -221,11 +381,13 @@ fn describe<S: Serve>(entries: &[Entry<S>]) -> (Vec<Describe>, serde_json::Map<S
             d
         })
         .collect();
+    let custom = custom.iter().map(|c| (c.describe)(&mut g)).collect();
     g.subschema_for::<Problem>();
-    (described, g.take_definitions(true))
+    (described, custom, g.take_definitions(true))
 }
 
-async fn dispatch<S: Serve>(
+/// A generated resource route.
+async fn resource<S: Serve>(
     st: Arc<Shared<S>>,
     i: usize,
     j: usize,
@@ -242,34 +404,13 @@ async fn dispatch<S: Serve>(
         body,
     };
     if route.method.is_read() {
-        return read(st, i, call).await;
+        return read(st, &headers, move |st, r| (st.entries[i].read)(r, &call)).await;
     }
     if route.body.is_some()
         && let Err(p) = require_json(&headers)
     {
         return p.into_response();
     }
-    write(st, i, j, call).await
-}
-
-/// Answer a read from one fresh snapshot, off the async workers.
-async fn read<S: Serve>(st: Arc<Shared<S>>, i: usize, call: Call) -> Response {
-    let res = tokio::task::spawn_blocking(move || {
-        let snap = st.reader.snapshot();
-        let facades = st.reader.at(&snap);
-        (st.entries[i].read)(&facades, &call).map(|data| (snap.frontier().outer, data))
-    })
-    .await;
-    match res {
-        Ok(Ok((epoch, data))) => respond(StatusCode::OK, epoch, data),
-        Ok(Err(problem)) => problem.into_response(),
-        Err(e) => Problem::internal(format!("read failed: {e}")).into_response(),
-    }
-}
-
-/// Decode a write here, then apply it on the writer thread as one
-/// transaction.
-async fn write<S: Serve>(st: Arc<Shared<S>>, i: usize, j: usize, call: Call) -> Response {
     let Some(stage) = &st.entries[i].stage else {
         return Problem::method_not_allowed().into_response();
     };
@@ -277,19 +418,8 @@ async fn write<S: Serve>(st: Arc<Shared<S>>, i: usize, j: usize, call: Call) -> 
         Ok(apply) => apply,
         Err(problem) => return problem.into_response(),
     };
-    let writer = st.writer.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        writer.write(move |tx| {
-            // This transaction commits as the snapshot's outer epoch;
-            // the first frontier that includes it is the next one.
-            let epoch = tx.snap().frontier().outer + 1;
-            apply(&mut **tx).map(|written| (epoch, written))
-        })
-    })
-    .await;
-    match res {
-        Ok(Ok((epoch, written))) => {
-            let route = &st.described[i].routes[j];
+    match commit(&st, Box::new(move |tx| apply(&mut **tx))).await {
+        Ok((epoch, written)) => {
             let status = if written.created {
                 StatusCode::CREATED
             } else {
@@ -304,12 +434,162 @@ async fn write<S: Serve>(st: Arc<Shared<S>>, i: usize, j: usize, call: Call) -> 
             }
             res
         }
-        Ok(Err(e)) => e.into_problem().into_response(),
-        // `Writer` panics only when the database thread is gone.
-        Err(e) if e.is_panic() => {
-            Problem::unavailable("the database writer has stopped").into_response()
+        Err(problem) => problem.into_response(),
+    }
+}
+
+/// A custom route.
+async fn custom<S: Serve>(
+    st: Arc<Shared<S>>,
+    c: usize,
+    query: Option<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let call = Call {
+        op: CUSTOM_OP,
+        key: None,
+        query,
+        body,
+    };
+    match &st.custom[c].handler {
+        Handler::Read(_) => {
+            read(st, &headers, move |st, r| match &st.custom[c].handler {
+                Handler::Read(f) => f(r, &call),
+                Handler::Write(_) => unreachable!("handler kinds never change"),
+            })
+            .await
         }
-        Err(e) => Problem::internal(format!("write failed: {e}")).into_response(),
+        Handler::Write(stage) => {
+            if let Err(p) = require_json(&headers) {
+                return p.into_response();
+            }
+            let apply = match stage(&call) {
+                Ok(apply) => apply,
+                Err(problem) => return problem.into_response(),
+            };
+            match commit(&st, apply).await {
+                Ok((epoch, written)) => respond(StatusCode::OK, epoch, written.data),
+                Err(problem) => problem.into_response(),
+            }
+        }
+    }
+}
+
+/// `POST /_tx`.
+async fn transaction<S: Serve>(st: Arc<Shared<S>>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Err(p) = require_json(&headers) {
+        return p.into_response();
+    }
+    let ops: Vec<TxOp> = match parse_body(&body) {
+        Ok(ops) => ops,
+        Err(p) => return p.into_response(),
+    };
+    let staged = tx::stage::<S>(
+        &st.described,
+        |i, call| match &st.entries[i].stage {
+            Some(stage) => stage(call),
+            None => Err(Problem::method_not_allowed()),
+        },
+        ops,
+    );
+    let apply = match staged {
+        Ok(apply) => apply,
+        Err(problem) => return problem.into_response(),
+    };
+    match commit(&st, apply).await {
+        Ok((epoch, written)) => respond(StatusCode::OK, epoch, written.data),
+        Err(problem) => problem.into_response(),
+    }
+}
+
+/// Answer a read from one fresh snapshot (at or after the request's
+/// `fold-min-epoch`), off the async workers.
+async fn read<S: Serve>(
+    st: Arc<Shared<S>>,
+    headers: &HeaderMap,
+    answer: impl FnOnce(&Shared<S>, &S::Read) -> Result<Value, Problem> + Send + 'static,
+) -> Response {
+    if let Err(problem) = reach_min_epoch(&st, headers).await {
+        return problem.into_response();
+    }
+    let res = tokio::task::spawn_blocking(move || {
+        let snap = st.reader.snapshot();
+        let facades = st.reader.at(&snap);
+        answer(&st, &facades).map(|data| (snap.frontier().outer, data))
+    })
+    .await;
+    match res {
+        Ok(Ok((epoch, data))) => respond(StatusCode::OK, epoch, data),
+        Ok(Err(problem)) => problem.into_response(),
+        Err(e) => Problem::internal(format!("read failed: {e}")).into_response(),
+    }
+}
+
+/// Wait, bounded, until the store's frontier reaches the request's
+/// `fold-min-epoch`.
+///
+/// Wakes on every commit through this server, and polls besides, so
+/// writes through a shared [`Writer`] are seen too.
+async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Result<(), Problem> {
+    let Some(raw) = headers.get(MIN_EPOCH_HEADER) else {
+        return Ok(());
+    };
+    let wanted: u64 = raw
+        .to_str()
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| Problem::bad_request(format!("{MIN_EPOCH_HEADER} must be an integer")))?;
+    let deadline = tokio::time::Instant::now() + st.min_epoch_wait;
+    let mut commits = st.committed.subscribe();
+    loop {
+        let current = st.reader.snapshot().frontier().outer;
+        if current >= wanted {
+            return Ok(());
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(Problem::epoch_not_reached(wanted, current));
+        }
+        let nap = (deadline - now).min(Duration::from_millis(10));
+        tokio::select! {
+            _ = commits.changed() => {}
+            _ = tokio::time::sleep(nap) => {}
+        }
+    }
+}
+
+/// Run one transaction on the writer thread, under admission control.
+async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, Written), Problem> {
+    let Ok(permit) = st.permits.clone().try_acquire_owned() else {
+        return Err(Problem::overloaded());
+    };
+    let writer = st.writer.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        writer.write(move |tx| {
+            // This transaction commits as the snapshot's outer epoch;
+            // the first frontier that includes it is the next one.
+            let epoch = tx.snap().frontier().outer + 1;
+            apply(tx).map(|written| (epoch, written))
+        })
+    })
+    .await;
+    match res {
+        Ok(Ok((epoch, written))) => {
+            st.committed.send_if_modified(|newest| {
+                let advanced = epoch > *newest;
+                if advanced {
+                    *newest = epoch;
+                }
+                advanced
+            });
+            Ok((epoch, written))
+        }
+        Ok(Err(e)) => Err(e.into_problem()),
+        // `Writer` panics only when the database thread is gone.
+        Err(e) if e.is_panic() => Err(Problem::unavailable("the database writer has stopped")),
+        Err(e) => Err(Problem::internal(format!("write failed: {e}"))),
     }
 }
 
@@ -325,16 +605,28 @@ fn location(name: &str, data: &Value) -> Option<HeaderValue> {
     HeaderValue::try_from(format!("/{name}/{segment}")).ok()
 }
 
-/// axum answers a wrong method with an empty 405; give it the problem
-/// body every other error has, keeping its `Allow` header.
-async fn problem_405(res: Response) -> Response {
-    if res.status() != StatusCode::METHOD_NOT_ALLOWED
-        || res.headers().contains_key(header::CONTENT_TYPE)
-    {
+/// axum answers a wrong method (405) or an oversized body (413) with a
+/// plain-text body; give them the problem body every other error has,
+/// keeping their headers (`Allow`).
+async fn problem_status(res: Response) -> Response {
+    let problem = match res.status() {
+        StatusCode::METHOD_NOT_ALLOWED => Problem::method_not_allowed(),
+        StatusCode::PAYLOAD_TOO_LARGE => Problem::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload-too-large",
+            "Payload too large",
+        ),
+        _ => return res,
+    };
+    let is_problem = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes() == crate::PROBLEM_JSON.as_bytes());
+    if is_problem {
         return res;
     }
     let allow = res.headers().get(header::ALLOW).cloned();
-    let mut out = Problem::method_not_allowed().into_response();
+    let mut out = problem.into_response();
     if let Some(allow) = allow {
         out.headers_mut().insert(header::ALLOW, allow);
     }

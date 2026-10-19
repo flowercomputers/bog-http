@@ -13,4 +13,13 @@ type Q = paths["/ranked"]["get"]["parameters"]["query"];
 const q: Q = { by: "value", order: "desc", limit: 5 };
 // @ts-expect-error: `by` is an enum
 const bad: Q = { by: "price" };
-export { p, c, h, e, q, bad };
+type TxBody = paths["/_tx"]["post"]["requestBody"]["content"]["application/json"];
+const t: TxBody = [
+  { resource: "prefs", op: "upsert", key: "theme", body: 1 },
+  { resource: "orders", op: "append", body: { customer: 1, cents: 5 } },
+];
+// @ts-expect-error: an op the resource doesn't have
+const badTx: TxBody = [{ resource: "orders", op: "upsert", key: 1, body: { customer: 1, cents: 5 } }];
+type Hdr = NonNullable<paths["/prefs/{key}"]["get"]["parameters"]["header"]>;
+const hdr: Hdr = { "fold-min-epoch": 7 };
+export { p, c, h, e, q, bad, t, badTx, hdr };

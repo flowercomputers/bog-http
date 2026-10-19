@@ -1,6 +1,6 @@
 # fold-http — design draft
 
-Status: milestones 1–2 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
+Status: milestones 1–3 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
 
 ## The goal behind the goal
@@ -271,3 +271,40 @@ Decisions worth revisiting:
   negative over HTTP.
 - `Cell` and `ValueView` answer `null` when empty rather than 404.
 - `security` is undocumented until auth lands (milestone 5).
+
+### Milestone 3 — done (2026-10-19)
+
+- `POST /_tx`: up to 1000 writes across any sources as one transaction.
+  Each op is addressed by `{resource, op, key?, query?, body?}` and
+  decoded exactly as its own route would be; a malformed op refuses the
+  whole transaction before the writer sees it, naming it by `index`.
+  Later ops see earlier ones. OpenAPI documents the body as a `oneOf`
+  of every write route, so generated clients type-check transactions.
+- Typed custom routes: `Server::get(path, summary, |read, Q| …)` reads
+  one snapshot; `Server::post(path, summary, |tx, B| …)` runs a
+  transaction whose `Err` rolls back and answers via `IntoProblem`.
+  Paths are checked against the reserved namespace and against every
+  generated route at startup. `NoParams` for routes without input.
+- Read-your-writes: `fold-min-epoch` on any read waits, bounded by
+  `min_epoch_wait` (5 s), for that epoch, waking on each commit and
+  polling for writes made through a shared `Writer`; otherwise
+  `503 epoch-not-reached` with `Retry-After`.
+- Admission control: `max_pending_writes` (1024) permits; past it,
+  `503 overloaded` with `Retry-After`. `0` serves read-only.
+- `body_limit` (2 MiB) with a `413` problem; axum's plain-text 405/413
+  bodies become problems.
+- One commit path for resource writes, `/_tx`, and custom writes.
+- Tests: transactions (atomicity, ordering, refusal, every malformed
+  shape), custom routes (snapshot reads, check-and-set rollback,
+  OpenAPI), min-epoch (immediate, timeout, wake-on-commit), admission,
+  body limit, and a hammer: 8 writers and 8 readers checking that views
+  agree with their sources inside every snapshot, epochs gap-free and
+  unique, reads never going back in time.
+
+Decisions worth revisiting:
+
+- A transaction can't refer to an id minted by an earlier op in the
+  same transaction; a custom `post` route can. Result references
+  (`"$0.key"`) would close the gap.
+- Custom routes have no path parameters yet.
+- Admission control counts writes, not their size.

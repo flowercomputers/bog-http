@@ -47,18 +47,40 @@
 //! paths parse as JSON, falling back to a bare string (see
 //! [`wire::parse_key`]).
 //!
+//! # Writes
+//! Every write is one fold transaction, decoded on the request's thread
+//! and applied on fold's writer thread; a malformed request never reaches
+//! the writer, and a refusal rolls everything back (`422`, naming the
+//! refusing source or view in `at`).
+//!
+//! - `POST /_tx` applies many writes, across any sources, atomically:
+//!   `[{"resource": "prefs", "op": "upsert", "key": "theme", "body": 1}, …]`.
+//!   Its OpenAPI body is a `oneOf` of every write route.
+//! - [`Server::get`] and [`Server::post`] add typed application routes:
+//!   a read over one snapshot, or a transaction. Both are documented in
+//!   OpenAPI from their types.
+//! - Writes return the epoch they committed into. Send it back as
+//!   `fold-min-epoch` on a read to read your own writes; the read waits
+//!   (bounded by [`Server::min_epoch_wait`]) until that epoch is visible.
+//! - [`Server::max_pending_writes`] bounds the writer's queue: past it,
+//!   writes get `503 overloaded` with `Retry-After` instead of piling up.
+//!
 //! # Serving your own kinds
 //! A source or view type from outside fold serves by implementing
 //! [`Resource`] (and [`SourceResource`] if writable): describe its
 //! [`Route`]s, answer reads from its facade, stage writes for the writer
 //! thread. The derive needs nothing more.
 
+mod custom;
 mod openapi;
 mod problem;
 mod resource;
 mod resources;
 mod server;
+mod tx;
 pub mod wire;
+
+pub use custom::NoParams;
 
 pub use problem::{IntoProblem, PROBLEM_JSON, Problem};
 pub use resource::{
@@ -68,7 +90,8 @@ pub use resource::{
 pub use resources::{
     BagAdd, BagRemove, By, CompleteParams, Completion, Hit, OrderedParams, SearchParams,
 };
-pub use server::Server;
+pub use server::{MIN_EPOCH_HEADER, Server};
+pub use tx::MAX_TX_OPS;
 
 #[cfg(feature = "derive")]
 pub use fold_http_derive::Serve;
