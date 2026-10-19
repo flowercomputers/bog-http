@@ -1,0 +1,15 @@
+[package]
+name = "fold-http-derive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "#[derive(Serve)] for fold-http."
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2"
+quote = "1"
+proc-macro2 = "1"

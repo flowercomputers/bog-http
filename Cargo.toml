@@ -1,0 +1,32 @@
+[package]
+name = "fold-http"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Serve any fold schema over HTTP: typed routes, snapshot reads, atomic writes."
+license = "MIT OR Apache-2.0"
+
+[workspace]
+members = ["derive"]
+
+[features]
+default = ["derive"]
+derive = ["dep:fold-http-derive"]
+
+[dependencies]
+fold = { path = "../fold2", features = ["serde", "schemars"] }
+fold-http-derive = { path = "derive", version = "0.1.0", optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+base64 = "0.22"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+fold = { path = "../fold2", features = ["serde", "schemars"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+trybuild = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
