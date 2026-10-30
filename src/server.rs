@@ -727,22 +727,39 @@ async fn stream<S: Serve>(
         return problem.into_response();
     }
     let resume = last_event_id(headers).and_then(|id| id.parse::<u64>().ok());
-    let items = match feed(st, i, call, resume).await {
+    let items = match feed(st, i, call, resume, false).await {
         Ok(items) => items,
         Err(problem) => return problem.into_response(),
     };
-    let events = items.map(|item| {
-        Ok::<_, std::convert::Infallible>(
-            Event::default()
-                .event(item.kind)
-                .id(item.epoch.to_string())
-                .data(item.data),
-        )
+    // Framed by hand rather than through `Sse`: a change's frame is
+    // rendered once in the hub and shared by every client as is.
+    let frames = items.map(|item| match item.frame {
+        Some(frame) => frame,
+        None => crate::live::sse_frame(item.kind, item.epoch, &item.data),
     });
-    Sse::new(events)
-        .keep_alive(KeepAlive::default())
+    let body = futures_util::stream::unfold(
+        (Box::pin(frames), tokio::time::interval(KEEP_ALIVE)),
+        |(mut frames, mut beat)| async move {
+            beat.reset();
+            let next = tokio::select! {
+                frame = frames.next() => frame?,
+                _ = beat.tick() => Bytes::from_static(b":\n\n"),
+            };
+            Some((Ok::<_, std::convert::Infallible>(next), (frames, beat)))
+        },
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        axum::body::Body::from_stream(body),
+    )
         .into_response()
 }
+
+/// How often an idle stream sends a comment, so proxies keep it open.
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// The most resources one `/_live` stream may carry.
 pub const MAX_LIVE: usize = 32;
@@ -808,7 +825,7 @@ async fn multiplex<S: Serve>(
 
     let mut feeds = Vec::with_capacity(picked.len());
     for (k, ((i, name, call), resume)) in picked.into_iter().zip(resume).enumerate() {
-        match feed(st.clone(), i, call, resume).await {
+        match feed(st.clone(), i, call, resume, true).await {
             Ok(items) => feeds.push(Box::pin(items.map(move |item| (k, name.clone(), item)))),
             Err(problem) => return problem.into_response(),
         }
@@ -845,6 +862,9 @@ struct Item {
     kind: &'static str,
     epoch: u64,
     data: String,
+    /// The event already framed for a resource's own stream, when it
+    /// is shared by every client (a change).
+    frame: Option<Bytes>,
 }
 
 /// Resource `i`'s feed for one client: a snapshot (or a replay from
@@ -855,6 +875,7 @@ async fn feed<S: Serve>(
     i: usize,
     call: Call,
     resume: Option<u64>,
+    with_data: bool,
 ) -> Result<impl futures_util::Stream<Item = Item> + Send + 'static, Problem> {
     let joined = st
         .hubs
@@ -869,7 +890,7 @@ async fn feed<S: Serve>(
     let floor = match (joined.replay, resume) {
         (Some(replay), Some(from)) => {
             let floor = replay.last().map_or(from, |c| c.epoch);
-            queue.extend(replay.iter().map(|c| change_item(c)));
+            queue.extend(replay.iter().map(|c| item_for(c, with_data)));
             floor
         }
         _ => {
@@ -894,6 +915,7 @@ async fn feed<S: Serve>(
         queue,
         closing,
         _open: open,
+        with_data,
     };
     Ok(futures_util::stream::unfold(feed, |mut f| async move {
         loop {
@@ -907,7 +929,7 @@ async fn feed<S: Serve>(
             match next {
                 Ok(change) if change.epoch > f.floor => {
                     f.floor = change.epoch;
-                    f.queue.push_back(change_item(&change));
+                    f.queue.push_back(item_for(&change, f.with_data));
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
@@ -938,6 +960,8 @@ struct Feed<S: Serve> {
     queue: VecDeque<Item>,
     closing: watch::Receiver<bool>,
     _open: Open,
+    /// The client renames events (`_live`) and needs each change's data.
+    with_data: bool,
 }
 
 async fn snapshot_item<S: Serve>(
@@ -951,14 +975,29 @@ async fn snapshot_item<S: Serve>(
         kind: "snapshot",
         epoch,
         data: json!({ "epoch": epoch, "data": data }).to_string(),
+        frame: None,
     })
 }
 
+/// A change for one client: the shared frame, plus the data for a
+/// `_live` stream that renames the event (copied only there).
 fn change_item(change: &Change) -> Item {
     Item {
         kind: "change",
         epoch: change.epoch,
+        data: String::new(),
+        frame: Some(change.frame.clone()),
+    }
+}
+
+/// [`change_item`], with the data itself when the client needs it.
+fn item_for(change: &Change, with_data: bool) -> Item {
+    if !with_data {
+        return change_item(change);
+    }
+    Item {
         data: change.data.clone(),
+        ..change_item(change)
     }
 }
 

@@ -34,10 +34,19 @@ pub const RING: usize = 1024;
 const IDLE_CHECK: Duration = Duration::from_millis(250);
 
 /// One commit's changes to one resource, serialized once for every
-/// client: `{"epoch", "changes": [...]}`.
+/// client: `{"epoch", "changes": [...]}`, and the whole SSE event a
+/// resource's own stream sends for it, rendered once too — with many
+/// clients, per-client formatting is most of the cost of a change.
 pub(crate) struct Change {
     pub(crate) epoch: u64,
     pub(crate) data: String,
+    pub(crate) frame: axum::body::Bytes,
+}
+
+/// One server-sent event, framed: `event`, `id`, then `data` (one line —
+/// the JSON is compact), then the blank line that ends it.
+pub(crate) fn sse_frame(event: &str, id: u64, data: &str) -> axum::body::Bytes {
+    format!("event: {event}\nid: {id}\ndata: {data}\n\n").into()
 }
 
 struct Hub {
@@ -131,7 +140,8 @@ fn run(hubs: Arc<Hubs>, i: usize, hub: Arc<Hub>, mut live: Live) {
                 // the next one.
                 let epoch = outer + 1;
                 let data = json!({ "epoch": epoch, "changes": changes }).to_string();
-                let change = Arc::new(Change { epoch, data });
+                let frame = sse_frame("change", epoch, &data);
+                let change = Arc::new(Change { epoch, data, frame });
                 let mut ring = hub.ring.lock().unwrap();
                 if ring.changes.len() == RING
                     && let Some(old) = ring.changes.pop_front()
