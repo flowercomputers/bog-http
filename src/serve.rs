@@ -3,7 +3,7 @@
 //! For a local app that talks to a fold on the same machine, the usual
 //! shape is spawn-or-connect: read the [discovery file](Server::discovery);
 //! if it names a live server, use it; if not, start one (a second start
-//! on the same store fails cleanly: fold2 holds one writer per store).
+//! on the same store fails cleanly: fold3 locks the store's directory).
 //! [`idle_exit`](Server::idle_exit) lets that server go away once nothing
 //! has used it for a while.
 
@@ -117,7 +117,7 @@ impl<S: Serve> Server<S> {
         L: axum::serve::Listener,
         L::Addr: std::fmt::Debug,
     {
-        let writer = self.writer.clone();
+        let db = self.db.clone();
         let closer = self.closer();
         let activity = self.activity.clone();
         let idle_exit = self.idle_exit;
@@ -145,9 +145,11 @@ impl<S: Serve> Server<S> {
             remove_if_ours(path);
         }
         served?;
-        tokio::task::spawn_blocking(move || writer.checkpoint())
+        tokio::task::spawn_blocking(move || db.checkpoint())
             .await
             .map_err(std::io::Error::other)?
+            .map(|_| ())
+            .map_err(std::io::Error::other)
     }
 }
 

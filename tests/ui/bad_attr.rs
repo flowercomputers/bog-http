@@ -1,4 +1,4 @@
-use fold::schema::*;
+use fold3::schema::*;
 use fold_http::Serve;
 
 #[derive(Schema, Serve)]
@@ -8,8 +8,7 @@ struct Db {
 }
 
 impl Declare for Db {
-    type Error = Rejected;
-    fn declare(_: &mut DbBuilder<Rejected>) {}
+    fn declare(_: &mut DbBuilder) {}
 }
 
 fn main() {}

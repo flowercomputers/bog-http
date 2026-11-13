@@ -2,7 +2,7 @@
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use fold::Rejected;
+use fold3::Rejected;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -124,7 +124,7 @@ impl Problem {
         .with_detail(reason)
     }
 
-    /// The store could not complete the operation (I/O, a dead writer).
+    /// The store could not complete the operation (I/O, a poisoned store).
     pub fn unavailable(detail: impl Into<String>) -> Self {
         Problem::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -191,29 +191,39 @@ impl IntoResponse for Problem {
     }
 }
 
-/// How a schema's transaction error becomes a response.
+/// How a fold error becomes a response.
 ///
-/// Implemented for [`Rejected`]; a schema with its own
-/// [`Declare::Error`](fold::Declare::Error) implements it to choose its
-/// statuses.
-pub trait IntoProblem {
-    fn into_problem(self) -> Problem;
-}
-
-impl IntoProblem for Rejected {
-    fn into_problem(self) -> Problem {
-        // `From<io::Error>` files WAL failures under `at = "io"`: the
-        // server's fault, not the request's.
-        if self.at == "io" {
-            Problem::unavailable(self.reason)
-        } else {
-            Problem::rejected(self.at, self.reason)
+/// A refusal ([`Error::Rejected`](fold3::Error::Rejected)) answers by
+/// what it carries: a [`Rejected`] is a `422` naming the source or view
+/// in `at`; a [`Problem`] is itself, so a write closure chooses its own
+/// status with `Error::reject(Problem::…)`; any other error is a `422`
+/// with its message. Everything else is the store's fault, not the
+/// request's: `503`.
+impl From<fold3::Error> for Problem {
+    fn from(e: fold3::Error) -> Self {
+        use fold3::Error;
+        if let Some(rejected) = e.rejected::<Rejected>() {
+            return Problem::rejected(&rejected.at, &rejected.reason);
         }
-    }
-}
-
-impl IntoProblem for Problem {
-    fn into_problem(self) -> Problem {
-        self
+        if let Some(problem) = e.rejected::<Problem>() {
+            return problem.clone();
+        }
+        match e {
+            Error::Rejected(why) => Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "rejected",
+                "Write rejected",
+            )
+            .with_detail(why.to_string()),
+            Error::OutOfMemory(_) => Problem::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload-too-large",
+                "Payload too large",
+            )
+            .with_detail(e.to_string()),
+            // The commit stands; say so rather than invite a retry.
+            Error::AfterCommit { .. } => Problem::internal(e.to_string()),
+            _ => Problem::unavailable(e.to_string()),
+        }
     }
 }

@@ -247,7 +247,7 @@ async fn schema_describes_every_served_field() {
             ("orders", "events"),
             ("tags", "set"),
             ("motd", "cell"),
-            ("stock", "bag"),
+            ("stock", "multiset"),
             ("spend", "map_view"),
             ("ranked", "ordered_view"),
             ("tags_by_len", "group_view"),

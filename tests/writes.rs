@@ -7,10 +7,9 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use common::{Order, Shop, app, raw, send, send_with, server};
-use fold::schema::Rejected;
-use fold::{Id, Tx};
+use common::{Order, app, raw, send, send_with, server};
 use fold_http::{NoParams, Problem};
+use fold3::schema::{Id, Rejected};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -159,25 +158,25 @@ struct Top {
 #[derive(Deserialize, JsonSchema)]
 struct Checkout {
     customer: u64,
-    cents: isize,
+    cents: i64,
 }
 
 #[derive(Serialize, JsonSchema)]
 struct Receipt {
     order: u64,
-    total: isize,
+    total: i64,
 }
 
-const LIMIT: isize = 1000;
+const LIMIT: i64 = 1000;
 
 fn shop_with_routes() -> axum::Router {
     server()
         .get(
             "/top",
             "Best customers by spend",
-            |r: &common::ShopRead, q: Top| {
+            |r: &common::ShopRead<'_>, q: Top| {
                 Ok(r.ranked
-                    .top(q.n)
+                    .top(q.n)?
                     .into_iter()
                     .map(|(id, cents)| (id.raw(), cents))
                     .collect::<Vec<_>>())
@@ -186,11 +185,17 @@ fn shop_with_routes() -> axum::Router {
         .get(
             "/totals",
             "Spend and order count, from one snapshot",
-            |r: &common::ShopRead, _: NoParams| {
-                let spend: isize = r.spend.iter().map(|(_, c)| c).sum();
-                let paid: isize = r.orders.iter().map(|(_, o)| o.cents).sum();
-                let count = r.orders.iter().count() as isize;
-                if spend != paid || r.order_count.get().unwrap_or(0) != count {
+            |r: &common::ShopRead<'_>, _: NoParams| {
+                let mut spend = 0;
+                for row in r.spend.iter() {
+                    spend += row?.1;
+                }
+                let (mut paid, mut count) = (0, 0);
+                for row in r.orders.iter() {
+                    paid += row?.1.cents;
+                    count += 1;
+                }
+                if spend != paid || r.order_count.get()?.unwrap_or(0) != count {
                     return Err(Problem::internal(format!(
                         "torn: spend {spend}, paid {paid}, count {count}"
                     )));
@@ -201,11 +206,18 @@ fn shop_with_routes() -> axum::Router {
         .post(
             "/checkout",
             "Order, refusing past the spend limit",
-            |tx: &mut Tx<'_, Shop>, c: Checkout| {
+            |tx: &mut common::ShopWrite<'_>, c: Checkout| {
                 let customer = Id::new(c.customer);
-                let spent = tx.read().spend.get(&customer).unwrap_or(0);
+                if c.cents > 100 * LIMIT {
+                    // a refusal with a status of its own
+                    return Err(fold3::Error::reject(Problem::bad_request("absurd")));
+                }
+                let spent = tx.read().spend.get(&customer)?.unwrap_or(0);
                 if spent + c.cents > LIMIT {
-                    return Err(Rejected::new("checkout", format!("over the {LIMIT} limit")));
+                    return Err(fold3::Error::reject(Rejected::new(
+                        "checkout",
+                        format!("over the {LIMIT} limit"),
+                    )));
                 }
                 let order = tx.orders.push(Order {
                     customer,
@@ -253,6 +265,14 @@ async fn custom_routes_read_snapshots_and_run_transactions() {
     .await;
     assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(res.body["at"], "checkout");
+    let res = send(
+        &app,
+        Method::POST,
+        "/checkout",
+        Some(json!({"customer": ada, "cents": 1_000_000})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{:?}", res.body);
     let res = send(&app, Method::GET, "/top?n=5", None).await;
     assert_eq!(res.data(), &json!([[ada, 600]]));
     assert_eq!(res.epoch(), epoch);
@@ -295,7 +315,11 @@ async fn custom_routes_read_snapshots_and_run_transactions() {
 #[should_panic(expected = "two routes")]
 fn custom_routes_cannot_shadow_generated_ones() {
     let _ = server()
-        .get("/customers", "x", |_: &common::ShopRead, _: NoParams| Ok(0))
+        .get(
+            "/customers",
+            "x",
+            |_: &common::ShopRead<'_>, _: NoParams| Ok(0),
+        )
         .into_router();
 }
 
@@ -323,6 +347,12 @@ async fn min_epoch_reads_wait_for_their_writes() {
     .await;
     assert_eq!(res.status, StatusCode::OK);
     assert!(res.epoch() >= written.parse().unwrap());
+
+    // A write that changes nothing commits nothing: it reports the
+    // epoch already there, which a read reaches at once.
+    let noop = send(&app, Method::DELETE, "/prefs/nobody", None).await;
+    assert_eq!(noop.data(), &json!({"removed": false}));
+    assert_eq!(noop.epoch().to_string(), written);
 
     // An epoch that never comes: refused once the wait is up.
     let future = (res.epoch() + 5).to_string();

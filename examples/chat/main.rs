@@ -1,13 +1,10 @@
 //! The gallery's chat (fold2-demos `src/chat.rs`), as a live web API.
 //!
-//! The schema is the gallery's, unchanged, so this serves the gallery's
-//! own data: point `FOLD_DIR` at a copy of `fold2-demos/data/chat` (never
-//! the original while the gallery runs; a store has one writer). Then
-//! open <http://127.0.0.1:10777>, in two windows to watch it push.
+//! Run it and open <http://127.0.0.1:10777>, in two windows to watch it
+//! push. Data lives in `./chat.fold` (override with `FOLD_DIR`).
 //!
 //! ```sh
-//! cp -R ../fold2-demos/data/chat /tmp/chat.fold
-//! FOLD_DIR=/tmp/chat.fold cargo run --example chat
+//! cargo run --example chat
 //! ```
 //!
 //! Everything the page does is plain fold-http:
@@ -26,11 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::response::Html;
 use axum::routing::get;
-use fold::Id;
-use fold::schema::*;
-use fold::search::{Simple, Tokenizer};
-use fold::storage::Codec;
 use fold_http::{Problem, Serve, Server};
+use fold3::schema::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -86,23 +80,21 @@ pub struct Chat {
     pub messages: Events<Message>,
     /// Author → messages sent.
     #[view]
-    pub by_author: MapView<Author, Diff>,
+    pub by_author: MapView<Author, Delta>,
     /// How many messages there are.
     #[view]
-    pub total: ValueView<Diff>,
+    pub total: ValueView<Delta>,
     /// BM25 over every message's text.
     #[view]
     pub search: SearchView<Id<Message>>,
 }
 
 impl Declare for Chat {
-    type Error = Rejected;
-
-    fn declare(b: &mut ChatBuilder<Rejected>) {
+    fn declare(b: &mut ChatBuilder) {
         b.messages.reject(|m| m.text.trim().is_empty());
         b.by_author.define(&b.messages.key_by(|m| m.author).count());
         b.total.define(&b.messages.count());
-        b.search.define(&b.messages.map(|m| m.text));
+        b.search.define(&b.messages.map(|m| m.text.clone()));
     }
 }
 
@@ -145,56 +137,56 @@ fn now() -> u64 {
 async fn main() -> std::io::Result<()> {
     let dir = std::env::var("FOLD_DIR").unwrap_or_else(|_| "./chat.fold".into());
     let addr = std::env::var("CHAT_ADDR").unwrap_or_else(|_| "127.0.0.1:10777".into());
-    let mut db = Chat::open(&dir).build()?;
-    // As the gallery does on open: settle any view rebuild before serving.
-    db.checkpoint()?;
+    let db = Chat::open(&dir).build().map_err(std::io::Error::other)?;
 
     let server = Server::new(db)
         .title("Chat")
         .version("1")
         .description("The gallery's chat: an append-only log, live counts, and search.")
-        .post("/send", "Send a message as an author", |tx, s: Send| {
-            let text = s.text.trim();
-            if text.chars().count() > 1000 {
-                return Err(Rejected::new("send", "at most 1000 characters"));
-            }
-            let id = tx.messages.push(Message {
-                author: s.author,
-                text: text.into(),
-                sent: now(),
-            })?;
-            Ok(Sent { id })
-        })
+        .post(
+            "/send",
+            "Send a message as an author",
+            |tx: &mut ChatWrite<'_>, s: Send| {
+                let text = s.text.trim();
+                if text.chars().count() > 1000 {
+                    return Err(fold3::Error::reject(Rejected::new(
+                        "send",
+                        "at most 1000 characters",
+                    )));
+                }
+                let id = tx.messages.push(Message {
+                    author: s.author,
+                    text: text.into(),
+                    sent: now(),
+                })?;
+                Ok(Sent { id })
+            },
+        )
         .get(
             "/find",
             "Search messages, best first",
-            |r: &ChatRead, f: Find| {
+            |r: &ChatRead<'_>, f: Find| {
                 let mut terms = Simple::tokenize(&f.q);
                 if f.q.ends_with(char::is_alphanumeric)
                     && let Some(prefix) = terms.pop()
                 {
                     terms.extend(
                         r.search
-                            .complete(&prefix, COMPLETIONS)
+                            .complete(&prefix, COMPLETIONS)?
                             .into_iter()
                             .map(|(t, _)| t),
                     );
                 }
-                let mut ranked = r.search.search(&terms.join(" "), SHOWN);
+                let mut ranked = r.search.search(&terms.join(" "), SHOWN)?;
                 // Equal scores: the newer message first.
                 ranked.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(b.cmp(a)));
-                Ok::<_, Problem>(
-                    ranked
-                        .into_iter()
-                        .filter_map(|(id, score)| {
-                            Some(Found {
-                                id,
-                                message: r.messages.get(&id)?,
-                                score,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                let mut found = Vec::new();
+                for (id, score) in ranked {
+                    if let Some(message) = r.messages.get(&id)? {
+                        found.push(Found { id, message, score });
+                    }
+                }
+                Ok::<_, Problem>(found)
             },
         );
 

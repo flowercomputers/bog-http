@@ -178,7 +178,7 @@ fn operation(id: &str, tag: &str, description: Option<&str>, r: &Route) -> Value
         ok["content"]["text/event-stream"] = json!({
             "schema": {
                 "type": "string",
-                "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
             },
         });
         if let Some(Value::Array(params)) = op.get_mut("parameters") {

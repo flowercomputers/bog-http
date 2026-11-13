@@ -47,6 +47,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     }
 
     let p = quote!(::fold_http::__private);
+    let sch = quote!(#p::fold3::schema);
     let mut entries = Vec::new();
     for f in &fields.named {
         let ident = f.ident.as_ref().expect("named field");
@@ -75,18 +76,36 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         } else {
             quote!(.description(#doc))
         };
+        // Accessors are fn items, not closures: their signatures are
+        // higher-ranked over the facades' lifetimes.
+        let facade = quote_spanned! {ty.span()=> {
+            fn facade<'r, 'a>(
+                r: &'r <#name as #sch::Schema>::Read<'a>,
+                _: ::fold_http::Tie<'a>,
+            ) -> &'r <#ty as ::fold_http::Resource>::Facade<'a> {
+                &r.#ident
+            }
+            facade
+        }};
         entries.push(if is("view") {
             quote_spanned! {ty.span()=>
-                ::fold_http::Entry::<Self>::view::<#ty>(#field_name, |r| &r.#ident) #describe
+                ::fold_http::Entry::<Self>::view::<#ty>(#field_name, #facade) #describe
             }
         } else {
             quote_spanned! {ty.span()=>
                 ::fold_http::Entry::<Self>::source::<#ty>(
                     #field_name,
-                    |r| &r.#ident,
-                    |w| &mut w.#ident,
-                    (&&#p::Probe::<#ty>::NEW)
-                        .mint::<<Self as #p::fold::Declare>::Error>(),
+                    #facade,
+                    {
+                        fn write<'r, 'a>(
+                            w: &'r <#name as #sch::Schema>::Write<'a>,
+                            _: ::fold_http::Tie<'a>,
+                        ) -> &'r <#ty as #sch::SourceDecl>::Write<'a> {
+                            &w.#ident
+                        }
+                        write
+                    },
+                    (&&#p::Probe::<#ty>::NEW).mint(),
                 ) #describe
             }
         });

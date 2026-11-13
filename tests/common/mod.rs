@@ -5,10 +5,8 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use fold::Id;
-use fold::schema::*;
-use fold::storage::Codec;
 use fold_http::Serve;
+use fold3::schema::*;
 use http_body_util::BodyExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,7 +26,7 @@ pub struct Customer {
 )]
 pub struct Order {
     pub customer: Id<Customer>,
-    pub cents: isize,
+    pub cents: i64,
 }
 
 #[derive(Schema, Serve)]
@@ -39,38 +37,36 @@ pub struct Shop {
     /// Labels on the shop.
     pub tags: Set<String>,
     pub motd: Cell<String>,
-    pub stock: Bag<String>,
+    pub stock: Multiset<String>,
     /// Customer → total spend.
     #[view]
-    pub spend: MapView<Id<Customer>, isize>,
+    pub spend: MapView<Id<Customer>, i64>,
     /// Customers by spend.
     #[view]
-    pub ranked: OrderedView<Id<Customer>, isize>,
+    pub ranked: OrderedView<Id<Customer>, i64>,
     #[view]
-    pub tags_by_len: GroupView<usize, String>,
+    pub tags_by_len: GroupView<u64, String>,
     #[view]
-    pub order_count: ValueView<isize>,
+    pub order_count: ValueView<i64>,
     /// Customers by name.
     #[view]
     pub names: SearchView<Id<Customer>>,
     #[view]
     #[serve(skip)]
-    pub by_region: MapView<String, isize>,
+    pub by_region: MapView<String, i64>,
 }
 
 impl Declare for Shop {
-    type Error = Rejected;
-
-    fn declare(b: &mut ShopBuilder<Rejected>) {
+    fn declare(b: &mut ShopBuilder) {
         b.orders.reject(|o| o.cents <= 0);
         b.orders.foreign_key(&b.customers, |o| o.customer);
         let spend = b.orders.key_by(|o| o.customer).map(|o| o.cents).sum();
         b.spend.define(&spend);
         b.ranked.define(&spend);
         b.tags_by_len
-            .define(&b.tags.map_with(|t, _| t.clone()).key_by(|t| t.len()));
+            .define(&b.tags.map_with(|t, _| t.clone()).key_by(|t| t.len() as u64));
         b.order_count.define(&b.orders.count());
-        b.names.define(&b.customers.map(|c| c.name));
+        b.names.define(&b.customers.map(|c| c.name.clone()));
         b.by_region
             .define(&b.customers.key_by(|c| c.region.clone()).map(|_| 1).sum());
     }

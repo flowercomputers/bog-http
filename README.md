@@ -1,13 +1,13 @@
 # fold-http
 
-Serve any [fold2](https://github.com/flowercomputers/fold2) schema as a
+Serve any [fold3](https://github.com/flowercomputers/fold3) schema as a
 live, typed HTTP API.
 
 ```rust
 #[derive(Schema, Serve)]
 struct Chat {
     messages: Events<Message>,
-    #[view] total: ValueView<Diff>,
+    #[view] total: ValueView<Delta>,
     #[view] search: SearchView<Id<Message>>,
 }
 
@@ -32,5 +32,5 @@ Try it with the gallery's chat:
 cargo run --example chat   # then open http://127.0.0.1:10777
 ```
 
-Builds against `../fold2` on its `fold-http` branch. See the crate docs
+Builds against `../fold3` on its `fold-http` branch. See the crate docs
 (`cargo doc --open`) for the wire contract, and `DESIGN.md` for the why.
