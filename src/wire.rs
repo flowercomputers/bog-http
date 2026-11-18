@@ -2,21 +2,17 @@
 //! key, query, and body decoding, keyset pagination, and the response
 //! shapes resources share.
 
-use std::ops::Bound;
-
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use fold::Diff;
-use fold::schema::Data;
-use fold::storage::Arrangement;
+use fold3::schema::Delta;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::Problem;
+use crate::{IntoProblem, Problem};
 
 /// The response header carrying the epoch of the snapshot a response was
 /// read at, or the epoch a write committed into.
@@ -29,9 +25,9 @@ pub const MAX_LIMIT: usize = 1000;
 
 /// Every successful response body.
 ///
-/// `epoch` is the snapshot's frontier: the number of transactions it
-/// reflects. A write's epoch is the first snapshot that includes it, so a
-/// read reporting `epoch >= n` has seen every write that reported `n`.
+/// `epoch` is the newest commit the snapshot sees. A write reports the
+/// epoch it committed as (or a later one), so a read reporting
+/// `epoch >= n` has seen every write that reported `n`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope<T> {
     pub epoch: u64,
@@ -180,19 +176,24 @@ pub fn paginate<T, C: Serialize>(
     Ok(Page { items, next })
 }
 
-/// An arrangement's rows strictly after `after` in `order`.
-pub fn arranged<'a, T: Data>(
-    arrangement: &'a Arrangement<T>,
-    order: Order,
-    after: Option<T>,
-) -> Box<dyn Iterator<Item = (T, Diff)> + 'a> {
-    match (order, after) {
-        (Order::Asc, None) => Box::new(arrangement.iter()),
-        (Order::Asc, Some(t)) => {
-            Box::new(arrangement.range((Bound::Excluded(t), Bound::Unbounded)))
+/// [`paginate`] over rows read from storage, any of which may fail.
+pub fn paginate_results<T, C: Serialize, E: IntoProblem>(
+    rows: impl Iterator<Item = Result<T, E>>,
+    limit: usize,
+    position: impl Fn(&T) -> C,
+) -> Result<Page<T>, Problem> {
+    let mut failed = None;
+    let rows = rows.map_while(|r| match r {
+        Ok(t) => Some(t),
+        Err(e) => {
+            failed = Some(e.into_problem());
+            None
         }
-        (Order::Desc, None) => Box::new(arrangement.iter_rev()),
-        (Order::Desc, Some(t)) => Box::new(arrangement.range_rev(..t)),
+    });
+    let page = paginate(rows, limit, position)?;
+    match failed {
+        Some(problem) => Err(problem),
+        None => Ok(page),
     }
 }
 
@@ -209,7 +210,7 @@ pub struct Row<K, V> {
 #[schemars(rename = "Counted_{T}")]
 pub struct Counted<T> {
     pub value: T,
-    pub count: Diff,
+    pub count: Delta,
 }
 
 /// One value of a key in a grouped view, with its multiplicity.
@@ -218,7 +219,7 @@ pub struct Counted<T> {
 pub struct GroupRow<K, V> {
     pub key: K,
     pub value: V,
-    pub count: Diff,
+    pub count: Delta,
 }
 
 /// The key a write addressed or minted.

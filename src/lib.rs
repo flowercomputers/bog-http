@@ -2,7 +2,7 @@
 // Erased write closures are spelled out once, in `resource`.
 #![allow(clippy::type_complexity)]
 
-//! fold-http: serve any [fold] schema over HTTP.
+//! fold-http: serve any [fold3] schema over HTTP.
 //!
 //! Derive [`Serve`] next to `Schema`, and every source and view becomes a
 //! typed resource: tables and events are writable, views are read-only,
@@ -30,7 +30,7 @@
 //! | `Events<V>` | as a table | `POST /n` appends, minting the id |
 //! | `Set<T>` | `GET /n` page of members, `GET /n/{member}` | `PUT`, `DELETE /n/{member}` |
 //! | `Cell<V>` | `GET /n` (`null` while unset) | `PUT /n`, `DELETE /n` |
-//! | `Bag<T>` | `GET /n` page of `{value, count}`, `GET /n/{value}` count | `POST /n {value, times}`, `DELETE /n/{value}?times=` |
+//! | `Multiset<T>` | `GET /n` page of `{value, count}`, `GET /n/{value}` count | `POST /n {value, times}`, `DELETE /n/{value}?times=` |
 //! | `MapView<K, V>` | as a table | |
 //! | `OrderedView<K, V>` | as a table, plus `?by=value&min=&max=` | |
 //! | `GroupView<K, V>` | `GET /n` page of `{key, value, count}`, `GET /n/{key}` page of a key's values | |
@@ -42,15 +42,20 @@
 //! Meta routes: `GET /openapi.json` (OpenAPI 3.1), `GET /_schema` (the
 //! same descriptions, compact), `GET /_health`.
 //!
+//! Keys and values cross the wire through serde, except fold3's `Id`,
+//! which is its raw `u64`. fold3 has no serde impls for `Id`, so an `Id`
+//! field in your own types takes `#[serde(with = "fold_http::id")]` and
+//! `#[schemars(with = "u64")]` (see [`Via`]).
+//!
 //! Successes are `{"epoch", "data"}` with a `fold-epoch` header; errors
 //! are RFC 9457 `application/problem+json` (see [`Problem`]). Keys in
 //! paths parse as JSON, falling back to a bare string (see
 //! [`wire::parse_key`]).
 //!
 //! # Writes
-//! Every write is one fold transaction, decoded on the request's thread
-//! and applied on fold's writer thread; a malformed request never reaches
-//! the writer, and a refusal rolls everything back (`422`, naming the
+//! Every write is one fold3 transaction, decoded on the request's thread
+//! and run on the blocking pool; a malformed request never begins a
+//! transaction, and a refusal rolls everything back (`422`, naming the
 //! refusing source or view in `at`).
 //!
 //! - `POST /_tx` applies many writes, across any sources, atomically:
@@ -62,7 +67,7 @@
 //! - Writes return the epoch they committed into. Send it back as
 //!   `fold-min-epoch` on a read to read your own writes; the read waits
 //!   (bounded by [`Server::min_epoch_wait`]) until that epoch is visible.
-//! - [`Server::max_pending_writes`] bounds the writer's queue: past it,
+//! - [`Server::max_pending_writes`] bounds the writes waiting: past it,
 //!   writes get `503 overloaded` with `Retry-After` instead of piling up.
 //!
 //! # Live
@@ -70,9 +75,10 @@
 //! `Accept: text/event-stream` (as `EventSource` does) and the first event,
 //! `snapshot`, is exactly what the plain `GET` answers; then one `change`
 //! event per commit that touches the resource, `{epoch, changes: [{key?,
-//! value, diff}]}`. Each event's `id` is its epoch, so a reconnect resumes
-//! from `Last-Event-ID` (replayed, or a fresh snapshot when too old). One
-//! hub per resource drains fold's subscription; a client that falls
+//! value, diff}]}` (a replaced value is a `-1` row for the old value and a
+//! `+1` row for the new). Each event's `id` is its epoch, so a reconnect
+//! resumes from `Last-Event-ID` (replayed, or a fresh snapshot when too
+//! old). One hub per resource drains fold3's subscription; a client that falls
 //! behind gets a fresh snapshot instead of an unbounded backlog.
 //!
 //! A page following several resources should use `GET /_live`, which
@@ -89,7 +95,7 @@
 //! - [`Server::discovery`] keeps a JSON file saying where the server is
 //!   (`url` or `socket`, `pid`), so an app can connect to a running one
 //!   or start its own; a second server on the same store fails cleanly
-//!   (fold2 allows one writer).
+//!   (fold3 locks its store directory).
 //! - [`Server::idle_exit`] lets an on-demand server leave once unused.
 //! - A loopback bind answers only to `localhost` names (DNS rebinding);
 //!   [`Server::bearer_token`] keeps out other local processes and pages,
@@ -102,10 +108,10 @@
 //! plain axum [`Router`](axum::Router).
 //!
 //! # Serving your own kinds
-//! A source or view type from outside fold serves by implementing
+//! A source or view type from outside fold3 serves by implementing
 //! [`Resource`] (and [`SourceResource`] if writable): describe its
-//! [`Route`]s, answer reads from its facade, stage writes for the writer
-//! thread. The derive needs nothing more.
+//! [`Route`]s, answer reads from its facade, stage writes to apply in
+//! the transaction. The derive needs nothing more.
 
 mod custom;
 mod guard;
@@ -118,6 +124,7 @@ mod resources;
 mod serve;
 mod server;
 mod tx;
+mod via;
 pub mod wire;
 
 pub use custom::NoParams;
@@ -125,13 +132,14 @@ pub use guard::ACCESS_TOKEN_PARAM;
 
 pub use problem::{IntoProblem, PROBLEM_JSON, Problem};
 pub use resource::{
-    Apply, Call, Describe, Entry, MINT_OP, Method, Mint, Resource, Route, SourceResource, Stage,
-    Wire, Written, inline_schema, schema_in,
+    Apply, Call, Describe, Entry, MINT_OP, Method, Mint, ReadLens, Resource, Route, SourceResource,
+    Stage, TxFn, WriteLens, Written, inline_schema, schema_in,
 };
 pub use resources::{
-    BagAdd, BagRemove, By, CompleteParams, Completion, Hit, OrderedParams, SearchParams,
+    By, CompleteParams, Completion, Hit, MultisetAdd, MultisetRemove, OrderedParams, SearchParams,
 };
 pub use server::{Closer, MAX_LIVE, MIN_EPOCH_HEADER, Server};
+pub use via::{Shape, Via, ViaId, ViaSerde, W, Wire, id};
 
 /// A CORS layer for a browser app on another origin (a dev server, a
 /// desktop shell): these origins only, with the methods and headers the
@@ -174,7 +182,7 @@ pub use fold_http_derive::Serve;
 /// Derive it with `#[derive(Serve)]` beside `#[derive(Schema)]`; skip a
 /// field with `#[serve(skip)]`. A hand-written impl builds [`Entry`]s
 /// directly.
-pub trait Serve: fold::Declare<Error: IntoProblem> {
+pub trait Serve: fold3::schema::Declare {
     fn entries() -> Vec<Entry<Self>>;
 }
 
@@ -183,41 +191,62 @@ pub trait Serve: fold::Declare<Error: IntoProblem> {
 pub mod __private {
     use std::marker::PhantomData;
 
-    use fold::Id;
-    use fold::schema::{Data, Error, SourceDecl, Table};
+    use fold3::schema::{Data, Id, SourceDecl, Table};
 
-    use crate::{Mint, Wire};
+    use crate::{Mint, Via, ViaId, ViaSerde};
 
-    pub use fold;
+    pub use fold3;
 
-    /// Autoref specialization: `(&&Probe::<D>::NEW).mint::<E>()` finds
-    /// [`MintById`] when `D` is `Table<Id<V>, V>` and [`MintNone`]
-    /// otherwise, which the derive can't tell apart from type tokens.
-    pub struct Probe<D>(PhantomData<fn() -> D>);
+    /// Autoref specialization, which the derive needs because it sees
+    /// only type tokens: `(&&Probe::<T>::NEW).via()` is [`ViaId`] when
+    /// `T` is an `Id` and [`ViaSerde`] otherwise; `.mint()` is a [`Mint`]
+    /// when `T` is a `Table<Id<V>, V>` and `None` otherwise.
+    pub struct Probe<T>(PhantomData<fn() -> T>);
 
-    impl<D> Probe<D> {
+    impl<T> Probe<T> {
         pub const NEW: Self = Probe(PhantomData);
     }
 
-    pub trait MintById<D: SourceDecl> {
-        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>>;
+    pub trait ViaIdProbe {
+        fn via(&self) -> ViaId;
     }
 
-    impl<V: Data + Wire> MintById<Table<Id<V>, V>> for &Probe<Table<Id<V>, V>> {
-        fn mint<E: Error>(&self) -> Option<Mint<<Table<Id<V>, V> as SourceDecl>::Write<E>, E>> {
+    impl<T> ViaIdProbe for &Probe<Id<T>> {
+        fn via(&self) -> ViaId {
+            ViaId
+        }
+    }
+
+    pub trait ViaSerdeProbe {
+        fn via(&self) -> ViaSerde;
+    }
+
+    impl<T> ViaSerdeProbe for Probe<T> {
+        fn via(&self) -> ViaSerde {
+            ViaSerde
+        }
+    }
+
+    pub trait MintById<D: SourceDecl, M> {
+        fn mint(&self) -> Option<Mint<D, M>>;
+    }
+
+    impl<V: Data, MV: Via<V>> MintById<Table<Id<V>, V>, (ViaId, MV)> for &Probe<Table<Id<V>, V>> {
+        fn mint(&self) -> Option<Mint<Table<Id<V>, V>, (ViaId, MV)>> {
             Some(Mint {
-                stage: crate::resources::mint_table::<V, E>,
-                route: crate::resources::mint_table_route::<V>,
+                stage: crate::resources::mint_table::<V, MV>,
+                route: crate::resources::mint_table_route::<V, MV>,
+                via: PhantomData,
             })
         }
     }
 
-    pub trait MintNone<D: SourceDecl> {
-        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>>;
+    pub trait MintNone<D: SourceDecl, M> {
+        fn mint(&self) -> Option<Mint<D, M>>;
     }
 
-    impl<D: SourceDecl> MintNone<D> for Probe<D> {
-        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>> {
+    impl<D: SourceDecl, M> MintNone<D, M> for Probe<D> {
+        fn mint(&self) -> Option<Mint<D, M>> {
             None
         }
     }

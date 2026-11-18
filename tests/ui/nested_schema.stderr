@@ -1,5 +1,5 @@
 error: fold-http doesn't serve nested schemas yet; mark the field #[serve(skip)]
-  --> tests/ui/nested_schema.rs:17:5
+  --> tests/ui/nested_schema.rs:16:5
    |
-17 |     inner: Inner,
+16 |     inner: Inner,
    |     ^^^^^

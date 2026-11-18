@@ -1,6 +1,7 @@
 # fold-http — design draft
 
-Status: milestones 1–5 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
+Status: milestones 1–5 landed, then ported from fold2 to fold3 (see
+"Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
 
 ## The goal behind the goal
@@ -379,3 +380,54 @@ Not done, and why:
   application's choice of exporter.
 - HTTP/2: browsers only use it with TLS. Until then a page should follow
   everything through one `/_live` stream (six connections per host).
+
+### fold3 port (2026-11-18)
+
+fold3 kept fold2's schema layer (the same kinds, `Declare`,
+`SourceDecl`/`ViewDecl`), so the design stands; the edges moved:
+
+- Read and write structs carry a lifetime (`S::Read<'a>`, bound to one
+  snapshot). `Resource::Facade<'a>` is generic over it; the derive picks
+  fields with callback lenses (`|r, k| k(&r.field)`), since a fn
+  pointer can't return a lifetime that appears only through associated
+  types.
+- One shared `Db<S>` replaces the `Reader`/`Writer` pair: reads and
+  writes both run on the blocking pool, and fold3 serializes writes on
+  its own lock. `Server::shared(Arc<Db<S>>)` replaces `from_parts`.
+- Errors are fold3's one `Error`. `Error::Rejected` carrying a
+  `Rejected` is a `422` naming `at`; carrying a `Problem`, that problem
+  (how custom routes choose a status); store failures are `503`.
+  Custom writes return `fold3::Result`. `Declare::Error` is gone.
+- Epochs: a snapshot's `epoch()` is the newest commit it sees, and a
+  write reports the epoch it committed as, so the old `+ 1` is gone.
+- Change feeds arrive as `Insert`/`Delete`/`Replace`; the wire keeps its
+  `{key?, value, diff}` rows, a replacement being `-1` old then `+1` new.
+- A fold3 facade subscription misses a commit published between its
+  snapshot and the subscribe call, so a hub starts its ring at an epoch
+  read *after* subscribing; clients already drop changes at or below
+  their own snapshot.
+- `Bag` is `Multiset` (kind `multiset`, `MultisetAdd`/`MultisetRemove`).
+  Row types need fold3's `Codec`; fold3 has no `isize`/`usize` codecs.
+- fold3 is a plain dependency: nothing in it changed for the port.
+  A write's exact epoch comes from fold3's commit hook
+  (`db.raw().on_commit`), which runs on the committing thread before
+  the write lock is released; `commit` reads it back from a
+  thread-local. Sets page backwards by skipping down from the greatest
+  member, and multisets (forward reads only) skip to the cursor, or
+  reverse the whole multiset for `order=desc`: both cost a scan up to
+  the cursor where fold2 seeked.
+- `Id` has no serde impls in fold3, and the orphan rule keeps fold-http
+  from adding them (nor can one trait hold both "every serde type" and
+  "`Id`": coherence assumes fold3 might add them). So a served key or
+  value goes through an encoder, `Via<T>`, chosen per field by the
+  derive with autoref specialization on `<Kind as Shape>::Key`/`Value`:
+  `ViaId` (raw `u64`) for an `Id`, `ViaSerde` otherwise. Resources are
+  `Resource<(MK, MV)>` and put keys and values on the wire as `W<T, M>`,
+  which implements serde and schemars through `M`, so response shapes
+  and OpenAPI names are as before. An `Id` inside an application type
+  takes `#[serde(with = "fold_http::id")]` and
+  `#[schemars(with = "u64")]`; an `Id` nested in a tuple key or value
+  can't be served until fold3 has serde impls of its own, at which
+  point `Via` can go.
+- Group listings resume from a `(key, value)` cursor by seeking the key
+  and skipping within that one group: fold3 has no `(key, value)` seek.

@@ -3,8 +3,7 @@
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::custom::TxFn;
-use crate::resource::{Apply, Call, Describe, Written};
+use crate::resource::{Call, Describe, TxFn, Written};
 use crate::{Problem, Serve};
 
 /// The most operations one transaction may carry.
@@ -27,10 +26,10 @@ pub(crate) struct TxOp {
 
 /// Find each op's route, decode it exactly as its own route would, and
 /// stage them all into one transaction. Any malformed op refuses the
-/// whole transaction before the writer sees it.
+/// whole transaction before it begins.
 pub(crate) fn stage<S: Serve>(
     described: &[Describe],
-    stage_of: impl Fn(usize, Call) -> Result<Apply<fold::WriteOf<S>, S::Error>, Problem>,
+    stage_of: impl Fn(usize, Call) -> Result<TxFn<S>, Problem>,
     ops: Vec<TxOp>,
 ) -> Result<TxFn<S>, Problem> {
     if ops.is_empty() || ops.len() > MAX_TX_OPS {
@@ -44,10 +43,10 @@ pub(crate) fn stage<S: Serve>(
         let apply = stage_one::<S>(described, &stage_of, op).map_err(|p| p.with_index(index))?;
         applies.push(apply);
     }
-    Ok(Box::new(move |tx| {
+    Ok(Box::new(move |tx: &mut S::Write<'_>| {
         let mut results = Vec::with_capacity(applies.len());
         for apply in applies {
-            results.push(apply(&mut **tx)?.data);
+            results.push(apply(&mut *tx)?.data);
         }
         Ok(Written {
             data: json!({ "results": results }),
@@ -58,9 +57,9 @@ pub(crate) fn stage<S: Serve>(
 
 fn stage_one<S: Serve>(
     described: &[Describe],
-    stage_of: &impl Fn(usize, Call) -> Result<Apply<fold::WriteOf<S>, S::Error>, Problem>,
+    stage_of: &impl Fn(usize, Call) -> Result<TxFn<S>, Problem>,
     op: TxOp,
-) -> Result<Apply<fold::WriteOf<S>, S::Error>, Problem> {
+) -> Result<TxFn<S>, Problem> {
     let Some((i, d)) = described
         .iter()
         .enumerate()

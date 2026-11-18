@@ -17,12 +17,31 @@ async fn snapshots_never_tear_under_concurrent_writes() {
         .get(
             "/invariant",
             "Views agree with their sources",
-            |r: &common::ShopRead, _: NoParams| {
-                let spend: isize = r.spend.iter().map(|(_, c)| c).sum();
-                let paid: isize = r.orders.iter().map(|(_, o)| o.cents).sum();
-                let count = r.orders.iter().count() as isize;
-                let ranked: isize = r.ranked.iter().map(|(_, c)| c).sum();
-                if spend != paid || ranked != paid || r.order_count.get().unwrap_or(0) != count {
+            |r: &common::ShopRead<'_>, _: NoParams| {
+                let rows = |e: fold3::Error| Problem::internal(e.to_string());
+                let spend: i64 = r
+                    .spend
+                    .iter()
+                    .map(|r| r.map(|(_, c)| c))
+                    .sum::<Result<_, _>>()
+                    .map_err(rows)?;
+                let paid: i64 = r
+                    .orders
+                    .iter()
+                    .map(|r| r.map(|(_, o)| o.cents))
+                    .sum::<Result<_, _>>()
+                    .map_err(rows)?;
+                let count = r.orders.len().map_err(rows)? as i64;
+                let ranked: i64 = r
+                    .ranked
+                    .iter()
+                    .map(|r| r.map(|(_, c)| c))
+                    .sum::<Result<_, _>>()
+                    .map_err(rows)?;
+                if spend != paid
+                    || ranked != paid
+                    || r.order_count.get().map_err(rows)?.unwrap_or(0) != count
+                {
                     return Err(Problem::internal(format!(
                         "torn: spend {spend} ranked {ranked} paid {paid} count {count}"
                     )));

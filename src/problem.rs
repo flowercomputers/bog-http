@@ -2,7 +2,7 @@
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use fold::Rejected;
+use fold3::schema::Rejected;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -191,23 +191,57 @@ impl IntoResponse for Problem {
     }
 }
 
-/// How a schema's transaction error becomes a response.
+/// How an error becomes a response.
 ///
-/// Implemented for [`Rejected`]; a schema with its own
-/// [`Declare::Error`](fold::Declare::Error) implements it to choose its
-/// statuses.
+/// Implemented for fold3's [`Error`](fold3::Error) and for [`Problem`]
+/// itself. A transaction refused with
+/// [`Error::reject`](fold3::Error::reject) answers by what it carries: a
+/// [`Problem`] as it is (so a custom route can choose its status), a
+/// [`Rejected`] as `422` naming the refusing source or view, and any
+/// other error as `422` with its message.
 pub trait IntoProblem {
     fn into_problem(self) -> Problem;
 }
 
 impl IntoProblem for Rejected {
     fn into_problem(self) -> Problem {
-        // `From<io::Error>` files WAL failures under `at = "io"`: the
-        // server's fault, not the request's.
-        if self.at == "io" {
-            Problem::unavailable(self.reason)
-        } else {
-            Problem::rejected(self.at, self.reason)
+        Problem::rejected(self.at, self.reason)
+    }
+}
+
+impl IntoProblem for fold3::Error {
+    fn into_problem(self) -> Problem {
+        use fold3::Error as E;
+        match &self {
+            E::Rejected(why) => {
+                if let Some(problem) = why.downcast_ref::<Problem>() {
+                    problem.clone()
+                } else if let Some(r) = why.downcast_ref::<Rejected>() {
+                    r.clone().into_problem()
+                } else {
+                    Problem::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "rejected",
+                        "Write rejected",
+                    )
+                    .with_detail(why.to_string())
+                }
+            }
+            E::OutOfMemory(_) => Problem::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "transaction-too-large",
+                "Transaction too large",
+            )
+            .with_detail(self.to_string()),
+            // The commit stands; only the maintenance after it failed.
+            E::AfterCommit { .. } => Problem::internal(self.to_string()),
+            // The store, not the request: try again (after a reopen).
+            E::Io { .. }
+            | E::Locked(_)
+            | E::Poisoned(_)
+            | E::MaintenancePanicked
+            | E::Corrupt { .. } => Problem::unavailable(self.to_string()),
+            _ => Problem::internal(self.to_string()),
         }
     }
 }

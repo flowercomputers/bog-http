@@ -26,11 +26,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::response::Html;
 use axum::routing::get;
-use fold::Id;
-use fold::schema::*;
-use fold::search::{Simple, Tokenizer};
-use fold::storage::Codec;
 use fold_http::{Problem, Serve, Server};
+use fold3::schema::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -86,23 +83,21 @@ pub struct Chat {
     pub messages: Events<Message>,
     /// Author → messages sent.
     #[view]
-    pub by_author: MapView<Author, Diff>,
+    pub by_author: MapView<Author, i64>,
     /// How many messages there are.
     #[view]
-    pub total: ValueView<Diff>,
+    pub total: ValueView<i64>,
     /// BM25 over every message's text.
     #[view]
     pub search: SearchView<Id<Message>>,
 }
 
 impl Declare for Chat {
-    type Error = Rejected;
-
-    fn declare(b: &mut ChatBuilder<Rejected>) {
+    fn declare(b: &mut ChatBuilder) {
         b.messages.reject(|m| m.text.trim().is_empty());
         b.by_author.define(&b.messages.key_by(|m| m.author).count());
         b.total.define(&b.messages.count());
-        b.search.define(&b.messages.map(|m| m.text));
+        b.search.define(&b.messages.map(|m| m.text.clone()));
     }
 }
 
@@ -115,6 +110,8 @@ struct Send {
 
 #[derive(Serialize, JsonSchema)]
 struct Sent {
+    #[serde(with = "fold_http::id")]
+    #[schemars(with = "u64")]
     id: Id<Message>,
 }
 
@@ -127,6 +124,8 @@ struct Find {
 
 #[derive(Serialize, JsonSchema)]
 struct Found {
+    #[serde(with = "fold_http::id")]
+    #[schemars(with = "u64")]
     id: Id<Message>,
     message: Message,
     score: f64,
@@ -145,9 +144,9 @@ fn now() -> u64 {
 async fn main() -> std::io::Result<()> {
     let dir = std::env::var("FOLD_DIR").unwrap_or_else(|_| "./chat.fold".into());
     let addr = std::env::var("CHAT_ADDR").unwrap_or_else(|_| "127.0.0.1:10777".into());
-    let mut db = Chat::open(&dir).build()?;
+    let db = Chat::open(&dir).build().map_err(std::io::Error::other)?;
     // As the gallery does on open: settle any view rebuild before serving.
-    db.checkpoint()?;
+    db.checkpoint().map_err(std::io::Error::other)?;
 
     let server = Server::new(db)
         .title("Chat")
@@ -156,7 +155,10 @@ async fn main() -> std::io::Result<()> {
         .post("/send", "Send a message as an author", |tx, s: Send| {
             let text = s.text.trim();
             if text.chars().count() > 1000 {
-                return Err(Rejected::new("send", "at most 1000 characters"));
+                return Err(fold3::Error::reject(Rejected::new(
+                    "send",
+                    "at most 1000 characters",
+                )));
             }
             let id = tx.messages.push(Message {
                 author: s.author,
@@ -168,7 +170,8 @@ async fn main() -> std::io::Result<()> {
         .get(
             "/find",
             "Search messages, best first",
-            |r: &ChatRead, f: Find| {
+            |r: &ChatRead<'_>, f: Find| {
+                let failed = |e: fold3::Error| Problem::internal(e.to_string());
                 let mut terms = Simple::tokenize(&f.q);
                 if f.q.ends_with(char::is_alphanumeric)
                     && let Some(prefix) = terms.pop()
@@ -176,25 +179,21 @@ async fn main() -> std::io::Result<()> {
                     terms.extend(
                         r.search
                             .complete(&prefix, COMPLETIONS)
+                            .map_err(failed)?
                             .into_iter()
                             .map(|(t, _)| t),
                     );
                 }
-                let mut ranked = r.search.search(&terms.join(" "), SHOWN);
+                let mut ranked = r.search.search(&terms.join(" "), SHOWN).map_err(failed)?;
                 // Equal scores: the newer message first.
                 ranked.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(b.cmp(a)));
-                Ok::<_, Problem>(
-                    ranked
-                        .into_iter()
-                        .filter_map(|(id, score)| {
-                            Some(Found {
-                                id,
-                                message: r.messages.get(&id)?,
-                                score,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                let mut found = Vec::with_capacity(ranked.len());
+                for (id, score) in ranked {
+                    if let Some(message) = r.messages.get(&id).map_err(failed)? {
+                        found.push(Found { id, message, score });
+                    }
+                }
+                Ok(found)
             },
         );
 

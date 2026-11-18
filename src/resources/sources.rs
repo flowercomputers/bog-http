@@ -1,77 +1,86 @@
-//! Sources: `Table`, `Events`, `Set`, `Cell`, `Bag`.
+//! Sources: `Table`, `Events`, `Set`, `Cell`, `Multiset`.
 
-use fold::schema::{
-    Bag, BagWrite, Cell, CellWrite, Data, Error, Events, EventsWrite, Set, SetWrite, Table,
-    TableWrite,
+use std::ops::Bound;
+
+use fold3::schema::{
+    Cell, CellRead, CellWrite, Change, Data, Delta, Events, EventsWrite, Id, Multiset,
+    MultisetRead, MultisetWrite, Read, Set, SetRead, SetWrite, Table, TableWrite,
 };
-use fold::{BagRead, CellRead, Diff, Id, Read, SetRead};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{answer_keyed, get_route, keyed_change, list_route, value_change};
+use super::{answer_keyed, get_route, keyed_change, list_route, read, value_change, value_row};
+use crate::Problem;
 use crate::resource::{
     Apply, Call, Describe, Live, MINT_OP, Resource, Route, SourceResource, Written, schema_in,
 };
+use crate::via::{Shape, Via, ViaId, W};
 use crate::wire::{
-    Counted, DEFAULT_LIMIT, KeyOf, ListParams, Removed, arranged, decode_cursor, limit, paginate,
-    to_json,
+    Counted, DEFAULT_LIMIT, KeyOf, ListParams, Order, Page, Removed, decode_cursor, limit,
+    paginate_results, to_json,
 };
-use crate::{Problem, Wire};
 
 // ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
-impl<K: Data + Wire, V: Data + Wire> Resource for Table<K, V> {
-    type Facade = Read<K, V>;
+impl<K: 'static, V: 'static> Shape for Table<K, V> {
+    type Key = K;
+    type Value = V;
+}
+
+impl<K: Data, V: Data, MK: Via<K>, MV: Via<V>> Resource<(MK, MV)> for Table<K, V> {
+    type Facade<'a> = Read<'a, K, V>;
 
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
-        Describe::new(name, "table", schema_in::<V>(g))
-            .keyed(schema_in::<K>(g))
-            .route(list_route::<K, V>(g))
-            .route(get_route::<K, V>(g))
+        Describe::new(name, "table", schema_in::<W<V, MV>>(g))
+            .keyed(schema_in::<W<K, MK>>(g))
+            .route(list_route::<K, V, MK, MV>(g))
+            .route(get_route::<K, V, MK, MV>(g))
             .route(
                 Route::put("/{key}", "upsert", "Insert or replace the value at a key")
-                    .key::<K>(g)
-                    .body::<V>(g)
-                    .response::<KeyOf<K>>(g)
+                    .key::<W<K, MK>>(g)
+                    .body::<W<V, MV>>(g)
+                    .response::<KeyOf<W<K, MK>>>(g)
                     .creates(),
             )
             .route(
                 Route::delete("/{key}", "remove", "Remove the row at a key")
-                    .key::<K>(g)
+                    .key::<W<K, MK>>(g)
                     .response::<Removed>(g),
             )
     }
 
-    fn answer(facade: &Read<K, V>, call: &Call) -> Result<Value, Problem> {
-        answer_keyed(facade, call)
+    fn answer(facade: &Read<'_, K, V>, call: &Call) -> Result<Value, Problem> {
+        answer_keyed::<K, V, MK, MV>(facade, call)
     }
 
-    fn live(facade: &Read<K, V>) -> Option<Live> {
-        Some(Live::new(facade.subscribe(), keyed_change))
+    fn live(facade: &Read<'_, K, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), keyed_change::<K, V, MK, MV>))
     }
 }
 
-impl<K: Data + Wire, V: Data + Wire> SourceResource for Table<K, V> {
-    fn stage<E: Error>(call: Call) -> Result<Apply<TableWrite<K, V, E>, E>, Problem> {
+impl<K: Data, V: Data, MK: Via<K>, MV: Via<V>> SourceResource<(MK, MV)> for Table<K, V> {
+    fn stage(call: Call) -> Result<Apply<Self>, Problem> {
         match call.op {
             "upsert" => {
-                let key: K = call.key()?;
-                let value: V = call.body()?;
-                Ok(Box::new(move |w: &mut TableWrite<K, V, E>| {
-                    let created = w.get(&key).is_none();
-                    let out = Written::ok(&KeyOf { key: key.clone() }).created_if(created);
+                let key = call.key::<W<K, MK>>()?.into_inner();
+                let value = call.body::<W<V, MV>>()?.into_inner();
+                Ok(Box::new(move |w: &TableWrite<'_, K, V>| {
+                    let created = !w.contains(&key)?;
+                    let out = Written::ok(&KeyOf {
+                        key: W::<K, MK>::new(key.clone()),
+                    })
+                    .created_if(created);
                     w.upsert(key, value)?;
                     Ok(out)
                 }))
             }
             "remove" => {
-                let key: K = call.key()?;
-                Ok(Box::new(move |w: &mut TableWrite<K, V, E>| {
-                    let removed = w.get(&key).is_some();
-                    w.remove(&key);
+                let key = call.key::<W<K, MK>>()?.into_inner();
+                Ok(Box::new(move |w: &TableWrite<'_, K, V>| {
+                    let removed = w.remove(&key)?;
                     Ok(Written::ok(&Removed { removed }))
                 }))
             }
@@ -81,20 +90,23 @@ impl<K: Data + Wire, V: Data + Wire> SourceResource for Table<K, V> {
 }
 
 /// `POST` for a `Table<Id<V>, V>`: insert, minting the id.
-pub(crate) fn mint_table<V: Data + Wire, E: Error>(
+pub(crate) fn mint_table<V: Data, MV: Via<V>>(
     call: Call,
-) -> Result<Apply<TableWrite<Id<V>, V, E>, E>, Problem> {
-    let value: V = call.body()?;
-    Ok(Box::new(move |w: &mut TableWrite<Id<V>, V, E>| {
+) -> Result<Apply<Table<Id<V>, V>>, Problem> {
+    let value = call.body::<W<V, MV>>()?.into_inner();
+    Ok(Box::new(move |w: &TableWrite<'_, Id<V>, V>| {
         let key = w.insert(value)?;
-        Ok(Written::ok(&KeyOf { key }).created_if(true))
+        Ok(Written::ok(&KeyOf {
+            key: W::<Id<V>, ViaId>::new(key),
+        })
+        .created_if(true))
     }))
 }
 
-pub(crate) fn mint_table_route<V: Data + Wire>(g: &mut SchemaGenerator) -> Route {
+pub(crate) fn mint_table_route<V: Data, MV: Via<V>>(g: &mut SchemaGenerator) -> Route {
     Route::post("", MINT_OP, "Insert a row, minting its id")
-        .body::<V>(g)
-        .response::<KeyOf<Id<V>>>(g)
+        .body::<W<V, MV>>(g)
+        .response::<KeyOf<W<Id<V>, ViaId>>>(g)
         .creates()
 }
 
@@ -102,40 +114,51 @@ pub(crate) fn mint_table_route<V: Data + Wire>(g: &mut SchemaGenerator) -> Route
 // Events
 // ---------------------------------------------------------------------------
 
-impl<V: Data + Wire> Resource for Events<V> {
-    type Facade = Read<Id<V>, V>;
+impl<V: 'static> Shape for Events<V> {
+    type Key = Id<V>;
+    type Value = V;
+}
+
+impl<V: Data, MK: Via<Id<V>>, MV: Via<V>> Resource<(MK, MV)> for Events<V> {
+    type Facade<'a> = Read<'a, Id<V>, V>;
 
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
-        Describe::new(name, "events", schema_in::<V>(g))
-            .keyed(schema_in::<Id<V>>(g))
-            .route(list_route::<Id<V>, V>(g))
-            .route(get_route::<Id<V>, V>(g))
+        Describe::new(name, "events", schema_in::<W<V, MV>>(g))
+            .keyed(schema_in::<W<Id<V>, MK>>(g))
+            .route(list_route::<Id<V>, V, MK, MV>(g))
+            .route(get_route::<Id<V>, V, MK, MV>(g))
             .route(
                 Route::post("", "append", "Append an event, minting its id")
-                    .body::<V>(g)
-                    .response::<KeyOf<Id<V>>>(g)
+                    .body::<W<V, MV>>(g)
+                    .response::<KeyOf<W<Id<V>, MK>>>(g)
                     .creates(),
             )
     }
 
-    fn answer(facade: &Read<Id<V>, V>, call: &Call) -> Result<Value, Problem> {
-        answer_keyed(facade, call)
+    fn answer(facade: &Read<'_, Id<V>, V>, call: &Call) -> Result<Value, Problem> {
+        answer_keyed::<Id<V>, V, MK, MV>(facade, call)
     }
 
-    fn live(facade: &Read<Id<V>, V>) -> Option<Live> {
-        Some(Live::new(facade.subscribe(), keyed_change))
+    fn live(facade: &Read<'_, Id<V>, V>) -> Option<Live> {
+        Some(Live::new(
+            facade.subscribe(),
+            keyed_change::<Id<V>, V, MK, MV>,
+        ))
     }
 }
 
-impl<V: Data + Wire> SourceResource for Events<V> {
-    fn stage<E: Error>(call: Call) -> Result<Apply<EventsWrite<V, E>, E>, Problem> {
+impl<V: Data, MK: Via<Id<V>>, MV: Via<V>> SourceResource<(MK, MV)> for Events<V> {
+    fn stage(call: Call) -> Result<Apply<Self>, Problem> {
         if call.op != "append" {
             return Err(call.unrouted());
         }
-        let value: V = call.body()?;
-        Ok(Box::new(move |w: &mut EventsWrite<V, E>| {
+        let value = call.body::<W<V, MV>>()?.into_inner();
+        Ok(Box::new(move |w: &EventsWrite<'_, V>| {
             let key = w.push(value)?;
-            Ok(Written::ok(&KeyOf { key }).created_if(true))
+            Ok(Written::ok(&KeyOf {
+                key: W::<Id<V>, MK>::new(key),
+            })
+            .created_if(true))
         }))
     }
 }
@@ -144,49 +167,72 @@ impl<V: Data + Wire> SourceResource for Events<V> {
 // Set
 // ---------------------------------------------------------------------------
 
-impl<T: Data + Wire> Resource for Set<T> {
-    type Facade = SetRead<T>;
+impl<T: 'static> Shape for Set<T> {
+    type Key = T;
+    type Value = ();
+}
+
+impl<T: Data, MK: Via<T>, MV: 'static> Resource<(MK, MV)> for Set<T> {
+    type Facade<'a> = SetRead<'a, T>;
 
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
-        Describe::new(name, "set", schema_in::<T>(g))
+        Describe::new(name, "set", schema_in::<W<T, MK>>(g))
             .route(
                 Route::get("", "list", "List members in order")
                     .query::<ListParams>()
-                    .response::<crate::wire::Page<T>>(g)
+                    .response::<Page<W<T, MK>>>(g)
                     .live(),
             )
             .route(
                 Route::get("/{key}", "contains", "Test membership: `true`, or 404")
-                    .key::<T>(g)
+                    .key::<W<T, MK>>(g)
                     .response::<bool>(g)
                     .may_404(),
             )
             .route(
                 Route::put("/{key}", "insert", "Add a member")
-                    .key::<T>(g)
-                    .response::<KeyOf<T>>(g)
+                    .key::<W<T, MK>>(g)
+                    .response::<KeyOf<W<T, MK>>>(g)
                     .creates(),
             )
             .route(
                 Route::delete("/{key}", "remove", "Remove a member")
-                    .key::<T>(g)
+                    .key::<W<T, MK>>(g)
                     .response::<Removed>(g),
             )
     }
 
-    fn answer(facade: &SetRead<T>, call: &Call) -> Result<Value, Problem> {
+    fn answer(facade: &SetRead<'_, T>, call: &Call) -> Result<Value, Problem> {
         match call.op {
             "list" => {
                 let p: ListParams = call.query()?;
                 let limit = limit(p.limit, DEFAULT_LIMIT)?;
-                let after = p.after.as_deref().map(decode_cursor::<T>).transpose()?;
-                let rows = arranged(facade.arrangement(), p.order, after.map(|t| (t, ())))
-                    .map(|((t, ()), _)| t);
-                to_json(&paginate(rows, limit, T::clone)?)
+                let after = p
+                    .after
+                    .as_deref()
+                    .map(decode_cursor::<W<T, MK>>)
+                    .transpose()?
+                    .map(W::into_inner);
+                let rows: Box<dyn Iterator<Item = fold3::Result<T>>> = match (p.order, after) {
+                    (Order::Asc, None) => Box::new(facade.iter()),
+                    (Order::Asc, Some(t)) => {
+                        Box::new(facade.range((Bound::Excluded(t), Bound::Unbounded)))
+                    }
+                    (Order::Desc, None) => Box::new(facade.iter_rev()),
+                    // fold3's sets have no reverse range: skip down to the
+                    // cursor from the greatest member.
+                    (Order::Desc, Some(t)) => Box::new(
+                        facade
+                            .iter_rev()
+                            .skip_while(move |r| r.as_ref().is_ok_and(|m| *m >= t)),
+                    ),
+                };
+                let rows = rows.map(|r| r.map(W::<T, MK>::new));
+                to_json(&paginate_results(rows, limit, W::clone)?)
             }
             "contains" => {
-                let member: T = call.key()?;
-                if facade.contains(&member) {
+                let member = call.key::<W<T, MK>>()?.into_inner();
+                if read(facade.contains(&member))? {
                     Ok(Value::Bool(true))
                 } else {
                     Err(Problem::not_found(format!(
@@ -199,29 +245,32 @@ impl<T: Data + Wire> Resource for Set<T> {
         }
     }
 
-    fn live(facade: &SetRead<T>) -> Option<Live> {
-        Some(Live::new(facade.subscribe(), |(t, ()), d| {
-            value_change(t, d)
-        }))
+    fn live(facade: &SetRead<'_, T>) -> Option<Live> {
+        Some(Live::new(
+            facade.subscribe(),
+            |(t, change): (T, Change<()>)| {
+                let diff = match change {
+                    Change::Insert(()) => 1,
+                    Change::Delete(()) => -1,
+                    Change::Replace((), ()) => 0,
+                };
+                (diff != 0).then(|| value_row::<T, MK>(t, diff))
+            },
+        ))
     }
 }
 
-impl<T: Data + Wire> SourceResource for Set<T> {
-    fn stage<E: Error>(call: Call) -> Result<Apply<SetWrite<T, E>, E>, Problem> {
-        let member: T = call.key()?;
+impl<T: Data, MK: Via<T>, MV: 'static> SourceResource<(MK, MV)> for Set<T> {
+    fn stage(call: Call) -> Result<Apply<Self>, Problem> {
+        let member = call.key::<W<T, MK>>()?.into_inner();
         match call.op {
-            "insert" => Ok(Box::new(move |w: &mut SetWrite<T, E>| {
-                let created = !w.contains(&member);
-                let out = Written::ok(&KeyOf {
-                    key: member.clone(),
-                })
-                .created_if(created);
-                w.insert(member)?;
-                Ok(out)
+            "insert" => Ok(Box::new(move |w: &SetWrite<'_, T>| {
+                let key = W::<T, MK>::new(member.clone());
+                let created = w.insert(member)?;
+                Ok(Written::ok(&KeyOf { key }).created_if(created))
             })),
-            "remove" => Ok(Box::new(move |w: &mut SetWrite<T, E>| {
-                let removed = w.contains(&member);
-                w.remove(&member);
+            "remove" => Ok(Box::new(move |w: &SetWrite<'_, T>| {
+                let removed = w.remove(&member)?;
                 Ok(Written::ok(&Removed { removed }))
             })),
             _ => Err(call.unrouted()),
@@ -233,54 +282,57 @@ impl<T: Data + Wire> SourceResource for Set<T> {
 // Cell
 // ---------------------------------------------------------------------------
 
-impl<V: Data + Wire> Resource for Cell<V> {
-    type Facade = CellRead<V>;
+impl<V: 'static> Shape for Cell<V> {
+    type Key = ();
+    type Value = V;
+}
+
+impl<V: Data, MK: 'static, MV: Via<V>> Resource<(MK, MV)> for Cell<V> {
+    type Facade<'a> = CellRead<'a, V>;
 
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
-        Describe::new(name, "cell", schema_in::<V>(g))
+        Describe::new(name, "cell", schema_in::<W<V, MV>>(g))
             .route(
                 Route::get("", "get", "Get the value: `null` while unset")
-                    .response::<Option<V>>(g)
+                    .response::<Option<W<V, MV>>>(g)
                     .live(),
             )
             .route(
                 Route::put("", "set", "Set the value")
-                    .body::<V>(g)
-                    .response::<V>(g)
+                    .body::<W<V, MV>>(g)
+                    .response::<W<V, MV>>(g)
                     .creates(),
             )
             .route(Route::delete("", "clear", "Unset the value").response::<Removed>(g))
     }
 
-    fn answer(facade: &CellRead<V>, call: &Call) -> Result<Value, Problem> {
+    fn answer(facade: &CellRead<'_, V>, call: &Call) -> Result<Value, Problem> {
         match call.op {
-            "get" => to_json(&facade.get()),
+            "get" => to_json(&read(facade.get())?.map(W::<V, MV>::new)),
             _ => Err(call.unrouted()),
         }
     }
 
-    fn live(facade: &CellRead<V>) -> Option<Live> {
-        Some(Live::new(facade.subscribe(), |((), v), d| {
-            value_change(v, d)
-        }))
+    fn live(facade: &CellRead<'_, V>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), value_change::<V, MV>))
     }
 }
 
-impl<V: Data + Wire> SourceResource for Cell<V> {
-    fn stage<E: Error>(call: Call) -> Result<Apply<CellWrite<V, E>, E>, Problem> {
+impl<V: Data, MK: 'static, MV: Via<V>> SourceResource<(MK, MV)> for Cell<V> {
+    fn stage(call: Call) -> Result<Apply<Self>, Problem> {
         match call.op {
             "set" => {
-                let value: V = call.body()?;
-                Ok(Box::new(move |w: &mut CellWrite<V, E>| {
-                    let created = w.get().is_none();
+                let value = call.body::<W<V, MV>>()?;
+                Ok(Box::new(move |w: &CellWrite<'_, V>| {
+                    let created = w.get()?.is_none();
                     let out = Written::ok(&value).created_if(created);
-                    w.set(value)?;
+                    w.set(value.into_inner())?;
                     Ok(out)
                 }))
             }
-            "clear" => Ok(Box::new(move |w: &mut CellWrite<V, E>| {
-                let removed = w.get().is_some();
-                w.clear();
+            "clear" => Ok(Box::new(move |w: &CellWrite<'_, V>| {
+                let removed = w.get()?.is_some();
+                w.clear()?;
                 Ok(Written::ok(&Removed { removed }))
             })),
             _ => Err(call.unrouted()),
@@ -289,29 +341,29 @@ impl<V: Data + Wire> SourceResource for Cell<V> {
 }
 
 // ---------------------------------------------------------------------------
-// Bag
+// Multiset
 // ---------------------------------------------------------------------------
 
 /// `POST /n`: add copies of a value.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(rename = "BagAdd_{T}")]
-pub struct BagAdd<T> {
+#[schemars(rename = "MultisetAdd_{T}")]
+pub struct MultisetAdd<T> {
     pub value: T,
     /// How many copies to add; 1 by default.
-    pub times: Option<Diff>,
+    pub times: Option<Delta>,
 }
 
 /// `DELETE /n/{key}`: remove copies of a value.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BagRemove {
+pub struct MultisetRemove {
     /// How many copies to remove, at most as many as there are; 1 by
     /// default.
-    pub times: Option<Diff>,
+    pub times: Option<Delta>,
 }
 
-fn times(requested: Option<Diff>) -> Result<Diff, Problem> {
+fn times(requested: Option<Delta>) -> Result<Delta, Problem> {
     match requested.unwrap_or(1) {
         n if n > 0 => Ok(n),
         n => Err(Problem::bad_request(format!(
@@ -320,77 +372,127 @@ fn times(requested: Option<Diff>) -> Result<Diff, Problem> {
     }
 }
 
-impl<T: Data + Wire> Resource for Bag<T> {
-    type Facade = BagRead<T>;
+impl<T: 'static> Shape for Multiset<T> {
+    type Key = T;
+    type Value = ();
+}
+
+impl<T: Data, MK: Via<T>, MV: 'static> Resource<(MK, MV)> for Multiset<T> {
+    type Facade<'a> = MultisetRead<'a, T>;
 
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe {
-        Describe::new(name, "bag", schema_in::<T>(g))
+        Describe::new(name, "multiset", schema_in::<W<T, MK>>(g))
             .route(
                 Route::get("", "list", "List values in order, with their counts")
                     .query::<ListParams>()
-                    .response::<crate::wire::Page<Counted<T>>>(g)
+                    .response::<Page<Counted<W<T, MK>>>>(g)
                     .live(),
             )
             .route(
                 Route::get("/{key}", "count", "Count copies of a value (0 if none)")
-                    .key::<T>(g)
-                    .response::<Diff>(g),
+                    .key::<W<T, MK>>(g)
+                    .response::<Delta>(g),
             )
             .route(
                 Route::post("", "add", "Add copies of a value")
-                    .body::<BagAdd<T>>(g)
-                    .response::<Counted<T>>(g),
+                    .body::<MultisetAdd<W<T, MK>>>(g)
+                    .response::<Counted<W<T, MK>>>(g),
             )
             .route(
                 Route::delete("/{key}", "remove", "Remove copies of a value")
-                    .key::<T>(g)
-                    .query::<BagRemove>()
-                    .response::<Counted<T>>(g),
+                    .key::<W<T, MK>>(g)
+                    .query::<MultisetRemove>()
+                    .response::<Counted<W<T, MK>>>(g),
             )
     }
 
-    fn answer(facade: &BagRead<T>, call: &Call) -> Result<Value, Problem> {
+    fn answer(facade: &MultisetRead<'_, T>, call: &Call) -> Result<Value, Problem> {
         match call.op {
             "list" => {
                 let p: ListParams = call.query()?;
                 let limit = limit(p.limit, DEFAULT_LIMIT)?;
-                let after = p.after.as_deref().map(decode_cursor::<T>).transpose()?;
-                let rows = arranged(facade.arrangement(), p.order, after)
-                    .map(|(value, count)| Counted { value, count });
-                to_json(&paginate(rows, limit, |c| c.value.clone())?)
+                let after = p
+                    .after
+                    .as_deref()
+                    .map(decode_cursor::<W<T, MK>>)
+                    .transpose()?
+                    .map(W::into_inner);
+                // fold3's multisets read only forwards, from the start:
+                // ascending pages skip to the cursor, descending ones
+                // reverse the whole multiset.
+                let rows: Box<dyn Iterator<Item = fold3::Result<(T, Delta)>>> =
+                    match (p.order, after) {
+                        (Order::Asc, None) => Box::new(facade.iter()),
+                        (Order::Asc, Some(t)) => Box::new(
+                            facade
+                                .iter()
+                                .skip_while(move |r| r.as_ref().is_ok_and(|(v, _)| *v <= t)),
+                        ),
+                        (Order::Desc, after) => {
+                            let mut all = facade.iter().collect::<fold3::Result<Vec<_>>>();
+                            if let Ok(all) = &mut all {
+                                if let Some(t) = &after {
+                                    all.retain(|(v, _)| v < t);
+                                }
+                                all.reverse();
+                            }
+                            match all {
+                                Ok(all) => Box::new(all.into_iter().map(Ok)),
+                                Err(e) => Box::new(std::iter::once(Err(e))),
+                            }
+                        }
+                    };
+                let rows = rows.map(|r| {
+                    r.map(|(value, count)| Counted {
+                        value: W::<T, MK>::new(value),
+                        count,
+                    })
+                });
+                to_json(&paginate_results(rows, limit, |c| c.value.clone())?)
             }
-            "count" => to_json(&facade.get(&call.key::<T>()?)),
+            "count" => {
+                let value = call.key::<W<T, MK>>()?.into_inner();
+                to_json(&read(facade.get(&value))?)
+            }
             _ => Err(call.unrouted()),
         }
     }
 
-    fn live(facade: &BagRead<T>) -> Option<Live> {
-        Some(Live::new(facade.subscribe(), value_change))
+    fn live(facade: &MultisetRead<'_, T>) -> Option<Live> {
+        Some(Live::new(facade.subscribe(), |(t, d)| {
+            Some(value_row::<T, MK>(t, d))
+        }))
     }
 }
 
-impl<T: Data + Wire> SourceResource for Bag<T> {
-    fn stage<E: Error>(call: Call) -> Result<Apply<BagWrite<T, E>, E>, Problem> {
+impl<T: Data, MK: Via<T>, MV: 'static> SourceResource<(MK, MV)> for Multiset<T> {
+    fn stage(call: Call) -> Result<Apply<Self>, Problem> {
         match call.op {
             "add" => {
-                let BagAdd { value, times: n }: BagAdd<T> = call.body()?;
-                let n = times(n)?;
-                Ok(Box::new(move |w: &mut BagWrite<T, E>| {
+                let MultisetAdd { value, times: n }: MultisetAdd<W<T, MK>> = call.body()?;
+                let (value, n) = (value.into_inner(), times(n)?);
+                Ok(Box::new(move |w: &MultisetWrite<'_, T>| {
                     w.add(value.clone(), n)?;
-                    let count = w.get(&value);
-                    Ok(Written::ok(&Counted { value, count }))
+                    let count = w.get(&value)?;
+                    Ok(Written::ok(&Counted {
+                        value: W::<T, MK>::new(value),
+                        count,
+                    }))
                 }))
             }
             "remove" => {
-                let value: T = call.key()?;
-                let n = times(call.query::<BagRemove>()?.times)?;
-                Ok(Box::new(move |w: &mut BagWrite<T, E>| {
-                    let n = n.min(w.get(&value).max(0));
+                let value = call.key::<W<T, MK>>()?.into_inner();
+                let n = times(call.query::<MultisetRemove>()?.times)?;
+                Ok(Box::new(move |w: &MultisetWrite<'_, T>| {
+                    let n = n.min(w.get(&value)?.max(0));
                     if n > 0 {
-                        w.remove(value.clone(), n);
+                        w.remove(value.clone(), n)?;
                     }
-                    let count = w.get(&value);
-                    Ok(Written::ok(&Counted { value, count }))
+                    let count = w.get(&value)?;
+                    Ok(Written::ok(&Counted {
+                        value: W::<T, MK>::new(value),
+                        count,
+                    }))
                 }))
             }
             _ => Err(call.unrouted()),

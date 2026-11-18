@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use fold::{Declare, Schema, Tx};
+use fold3::schema::{Declare, Schema};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::Problem;
-use crate::resource::{Call, Route, Written};
+use crate::resource::{Call, Route, TxFn};
 
 /// The query (or body) of a custom route that takes none: `{}`, and
 /// nothing else.
@@ -17,12 +17,8 @@ use crate::resource::{Call, Route, Written};
 #[serde(deny_unknown_fields)]
 pub struct NoParams {}
 
-/// A whole transaction, staged: runs once on the writer thread.
-pub(crate) type TxFn<S> =
-    Box<dyn for<'a> FnOnce(&mut Tx<'a, S>) -> Result<Written, <S as Declare>::Error> + Send>;
-
 pub(crate) type ReadHandler<S> =
-    Arc<dyn Fn(&<S as Schema>::Read, &Call) -> Result<Value, Problem> + Send + Sync>;
+    Arc<dyn for<'a> Fn(&<S as Schema>::Read<'a>, &Call) -> Result<Value, Problem> + Send + Sync>;
 
 /// Decodes a request into a [`TxFn`] on the request's thread.
 pub(crate) type WriteHandler<S> = Arc<dyn Fn(&Call) -> Result<TxFn<S>, Problem> + Send + Sync>;

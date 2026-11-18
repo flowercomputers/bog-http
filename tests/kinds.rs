@@ -1,4 +1,4 @@
-//! Every fold kind, served: sets, cells, bags, ordered, grouped, value,
+//! Every fold kind, served: sets, cells, multisets, ordered, grouped, value,
 //! and search views.
 
 mod common;
@@ -120,7 +120,7 @@ async fn cells_set_and_clear() {
 }
 
 #[tokio::test]
-async fn bags_count_copies() {
+async fn multisets_count_copies() {
     let app = app();
     let res = send(
         &app,
@@ -161,6 +161,15 @@ async fn bags_count_copies() {
         vec![
             json!({"value": "cd", "count": 1}),
             json!({"value": "lp", "count": 2})
+        ]
+    );
+    send(&app, Method::POST, "/stock", Some(json!({"value": "ep"}))).await;
+    assert_eq!(
+        walk(&app, "/stock?limit=1&order=desc").await,
+        vec![
+            json!({"value": "lp", "count": 2}),
+            json!({"value": "ep", "count": 1}),
+            json!({"value": "cd", "count": 1})
         ]
     );
     for bad in [

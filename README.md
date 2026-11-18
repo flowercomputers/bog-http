@@ -1,6 +1,6 @@
 # fold-http
 
-Serve any [fold2](https://github.com/flowercomputers/fold2) schema as a
+Serve any [fold3](https://github.com/flowercomputers/fold3) schema as a
 live, typed HTTP API.
 
 ```rust
@@ -32,5 +32,8 @@ Try it with the gallery's chat:
 cargo run --example chat   # then open http://127.0.0.1:10777
 ```
 
-Builds against `../fold2` on its `fold-http` branch. See the crate docs
+Builds against `../fold3` as it is (the `fold3` branch here; `main`
+still targets fold2). fold3's `Id` has no serde impls, so an `Id` field
+in your own row types takes `#[serde(with = "fold_http::id")]` and
+`#[schemars(with = "u64")]`. See the crate docs
 (`cargo doc --open`) for the wire contract, and `DESIGN.md` for the why.

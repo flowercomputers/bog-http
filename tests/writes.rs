@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
-use common::{Order, Shop, app, raw, send, send_with, server};
-use fold::schema::Rejected;
-use fold::{Id, Tx};
+use common::{Order, ShopWrite, app, raw, send, send_with, server};
 use fold_http::{NoParams, Problem};
+use fold3::Id;
+use fold3::schema::Rejected;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -159,25 +159,26 @@ struct Top {
 #[derive(Deserialize, JsonSchema)]
 struct Checkout {
     customer: u64,
-    cents: isize,
+    cents: i64,
 }
 
 #[derive(Serialize, JsonSchema)]
 struct Receipt {
     order: u64,
-    total: isize,
+    total: i64,
 }
 
-const LIMIT: isize = 1000;
+const LIMIT: i64 = 1000;
 
 fn shop_with_routes() -> axum::Router {
     server()
         .get(
             "/top",
             "Best customers by spend",
-            |r: &common::ShopRead, q: Top| {
+            |r: &common::ShopRead<'_>, q: Top| {
                 Ok(r.ranked
                     .top(q.n)
+                    .map_err(|e| Problem::internal(e.to_string()))?
                     .into_iter()
                     .map(|(id, cents)| (id.raw(), cents))
                     .collect::<Vec<_>>())
@@ -186,11 +187,22 @@ fn shop_with_routes() -> axum::Router {
         .get(
             "/totals",
             "Spend and order count, from one snapshot",
-            |r: &common::ShopRead, _: NoParams| {
-                let spend: isize = r.spend.iter().map(|(_, c)| c).sum();
-                let paid: isize = r.orders.iter().map(|(_, o)| o.cents).sum();
-                let count = r.orders.iter().count() as isize;
-                if spend != paid || r.order_count.get().unwrap_or(0) != count {
+            |r: &common::ShopRead<'_>, _: NoParams| {
+                let rows = |e: fold3::Error| Problem::internal(e.to_string());
+                let spend: i64 = r
+                    .spend
+                    .iter()
+                    .map(|r| r.map(|(_, c)| c))
+                    .sum::<Result<_, _>>()
+                    .map_err(rows)?;
+                let paid: i64 = r
+                    .orders
+                    .iter()
+                    .map(|r| r.map(|(_, o)| o.cents))
+                    .sum::<Result<_, _>>()
+                    .map_err(rows)?;
+                let count = r.orders.len().map_err(rows)? as i64;
+                if spend != paid || r.order_count.get().map_err(rows)?.unwrap_or(0) != count {
                     return Err(Problem::internal(format!(
                         "torn: spend {spend}, paid {paid}, count {count}"
                     )));
@@ -201,11 +213,14 @@ fn shop_with_routes() -> axum::Router {
         .post(
             "/checkout",
             "Order, refusing past the spend limit",
-            |tx: &mut Tx<'_, Shop>, c: Checkout| {
+            |tx: &mut ShopWrite<'_>, c: Checkout| {
                 let customer = Id::new(c.customer);
-                let spent = tx.read().spend.get(&customer).unwrap_or(0);
+                let spent = tx.spend.get(&customer)?.unwrap_or(0);
                 if spent + c.cents > LIMIT {
-                    return Err(Rejected::new("checkout", format!("over the {LIMIT} limit")));
+                    return Err(fold3::Error::reject(Rejected::new(
+                        "checkout",
+                        format!("over the {LIMIT} limit"),
+                    )));
                 }
                 let order = tx.orders.push(Order {
                     customer,

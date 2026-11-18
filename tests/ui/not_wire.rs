@@ -1,5 +1,4 @@
-use fold::schema::*;
-use fold::storage::Codec;
+use fold3::schema::*;
 use fold_http::Serve;
 
 /// Storable, but has no serde or JSON Schema: not servable.
@@ -12,8 +11,7 @@ struct Db {
 }
 
 impl Declare for Db {
-    type Error = Rejected;
-    fn declare(_: &mut DbBuilder<Rejected>) {}
+    fn declare(_: &mut DbBuilder) {}
 }
 
 fn main() {}

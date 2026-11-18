@@ -1,4 +1,4 @@
-//! `#[derive(Serve)]`: serve a fold schema's fields over HTTP.
+//! `#[derive(Serve)]`: serve a fold3 schema's fields over HTTP.
 //!
 //! Sits beside `#[derive(Schema)]` on the same struct and, like it,
 //! never inspects field types: each field becomes an `Entry` built from
@@ -75,18 +75,30 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         } else {
             quote!(.description(#doc))
         };
+        // Each field's key and value encoders: `Id` as its raw number,
+        // anything else through serde.
+        let via = quote_spanned! {ty.span()=>
+            (
+                (&&#p::Probe::<<#ty as ::fold_http::Shape>::Key>::NEW).via(),
+                (&&#p::Probe::<<#ty as ::fold_http::Shape>::Value>::NEW).via(),
+            )
+        };
         entries.push(if is("view") {
             quote_spanned! {ty.span()=>
-                ::fold_http::Entry::<Self>::view::<#ty>(#field_name, |r| &r.#ident) #describe
+                ::fold_http::Entry::<Self>::view::<#ty, _>(
+                    #field_name,
+                    #via,
+                    |r, k| k(&r.#ident),
+                ) #describe
             }
         } else {
             quote_spanned! {ty.span()=>
-                ::fold_http::Entry::<Self>::source::<#ty>(
+                ::fold_http::Entry::<Self>::source::<#ty, _>(
                     #field_name,
-                    |r| &r.#ident,
-                    |w| &mut w.#ident,
-                    (&&#p::Probe::<#ty>::NEW)
-                        .mint::<<Self as #p::fold::Declare>::Error>(),
+                    #via,
+                    |r, k| k(&r.#ident),
+                    |w, k| k(&w.#ident),
+                    (&&#p::Probe::<#ty>::NEW).mint(),
                 ) #describe
             }
         });
@@ -96,7 +108,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         impl ::fold_http::Serve for #name {
             fn entries() -> ::std::vec::Vec<::fold_http::Entry<Self>> {
                 #[allow(unused_imports)]
-                use #p::{MintById as _, MintNone as _};
+                use #p::{MintById as _, MintNone as _, ViaIdProbe as _, ViaSerdeProbe as _};
                 ::std::vec![#(#entries),*]
             }
         }
