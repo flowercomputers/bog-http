@@ -21,7 +21,7 @@ help: the trait `serde_core::ser::Serialize` is not implemented for `Opaque`
              (T0, T1, T2, T3, T4)
            and $N others
    = note: required for `Opaque` to implement `Wire`
-   = note: required for `fold3::schema::Table<String, Opaque>` to implement `Resource`
+   = note: required for `fold3::Table<String, Opaque>` to implement `Resource`
 
 error[E0277]: `Opaque` can't be served: it needs serde and a JSON Schema
   --> tests/ui/not_wire.rs:10:11
@@ -46,7 +46,7 @@ help: the trait `schemars::JsonSchema` is not implemented for `Opaque`
              (T0, T1, T2, T3, T4, T5)
            and $N others
    = note: required for `Opaque` to implement `Wire`
-   = note: required for `fold3::schema::Table<String, Opaque>` to implement `Resource`
+   = note: required for `fold3::Table<String, Opaque>` to implement `Resource`
 
 error[E0277]: `Opaque` can't be served: it needs serde and a JSON Schema
   --> tests/ui/not_wire.rs:10:11
@@ -72,4 +72,4 @@ help: the trait `for<'de> serde_core::de::Deserialize<'de>` is not implemented f
            and $N others
    = note: required for `Opaque` to implement `serde_core::de::DeserializeOwned`
    = note: required for `Opaque` to implement `Wire`
-   = note: required for `fold3::schema::Table<String, Opaque>` to implement `Resource`
+   = note: required for `fold3::Table<String, Opaque>` to implement `Resource`
