@@ -1,9 +1,9 @@
 [package]
-name = "fold-http"
+name = "bog-http"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Serve any fold schema over HTTP: typed routes, snapshot reads, atomic writes."
+description = "Serve any bog schema over HTTP: typed routes, snapshot reads, atomic writes."
 license = "MIT OR Apache-2.0"
 
 [workspace]
@@ -11,15 +11,15 @@ members = ["derive"]
 
 [features]
 default = ["derive", "serve", "cors"]
-derive = ["dep:fold-http-derive"]
+derive = ["dep:bog-http-derive"]
 # `Server::serve`: bind, serve, shut down gracefully on ctrl-c / SIGTERM.
 serve = ["tokio/net", "tokio/signal"]
-# `fold_http::cors`: a CORS layer for an explicit list of origins.
+# `bog_http::cors`: a CORS layer for an explicit list of origins.
 cors = ["dep:tower-http"]
 
 [dependencies]
-fold = { path = "../fold2", features = ["serde", "schemars"] }
-fold-http-derive = { path = "derive", version = "0.1.0", optional = true }
+bog = { git = "https://github.com/flowercomputers/bog", branch = "bog-http", features = ["serde", "schemars"] }
+bog-http-derive = { path = "derive", version = "0.1.0", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -32,7 +32,6 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 tower-http = { version = "0.6", default-features = false, features = ["cors"], optional = true }
 
 [dev-dependencies]
-fold = { path = "../fold2", features = ["serde", "schemars"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 trybuild = "1"

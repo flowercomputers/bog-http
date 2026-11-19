@@ -2,7 +2,7 @@
 // Erased write closures are spelled out once, in `resource`.
 #![allow(clippy::type_complexity)]
 
-//! fold-http: serve any [fold] schema over HTTP.
+//! bog-http: serve any [bog] schema over HTTP.
 //!
 //! Derive [`Serve`] next to `Schema`, and every source and view becomes a
 //! typed resource: tables and events are writable, views are read-only,
@@ -14,11 +14,11 @@
 //! struct Shop {
 //!     customers: Table<Id<Customer>, Customer>,
 //!     orders: Events<Order>,
-//!     #[view] revenue: MapView<Id<Customer>, isize>,
+//!     #[view] revenue: MapView<Id<Customer>, i64>,
 //! }
 //!
 //! let db = Shop::open("./shop").build()?;
-//! let app: axum::Router = fold_http::Server::new(db).into_router();
+//! let app: axum::Router = bog_http::Server::new(db).into_router();
 //! ```
 //!
 //! # Routes
@@ -30,7 +30,7 @@
 //! | `Events<V>` | as a table | `POST /n` appends, minting the id |
 //! | `Set<T>` | `GET /n` page of members, `GET /n/{member}` | `PUT`, `DELETE /n/{member}` |
 //! | `Cell<V>` | `GET /n` (`null` while unset) | `PUT /n`, `DELETE /n` |
-//! | `Bag<T>` | `GET /n` page of `{value, count}`, `GET /n/{value}` count | `POST /n {value, times}`, `DELETE /n/{value}?times=` |
+//! | `Multiset<T>` | `GET /n` page of `{value, count}`, `GET /n/{value}` count | `POST /n {value, times}`, `DELETE /n/{value}?times=` |
 //! | `MapView<K, V>` | as a table | |
 //! | `OrderedView<K, V>` | as a table, plus `?by=value&min=&max=` | |
 //! | `GroupView<K, V>` | `GET /n` page of `{key, value, count}`, `GET /n/{key}` page of a key's values | |
@@ -42,15 +42,15 @@
 //! Meta routes: `GET /openapi.json` (OpenAPI 3.1), `GET /_schema` (the
 //! same descriptions, compact), `GET /_health`.
 //!
-//! Successes are `{"epoch", "data"}` with a `fold-epoch` header; errors
+//! Successes are `{"epoch", "data"}` with a `bog-epoch` header; errors
 //! are RFC 9457 `application/problem+json` (see [`Problem`]). Keys in
 //! paths parse as JSON, falling back to a bare string (see
 //! [`wire::parse_key`]).
 //!
 //! # Writes
-//! Every write is one fold transaction, decoded on the request's thread
-//! and applied on fold's writer thread; a malformed request never reaches
-//! the writer, and a refusal rolls everything back (`422`, naming the
+//! Every write is one bog transaction, decoded on the request's thread
+//! and applied on the blocking pool; a malformed request never opens a
+//! transaction, and a refusal rolls everything back (`422`, naming the
 //! refusing source or view in `at`).
 //!
 //! - `POST /_tx` applies many writes, across any sources, atomically:
@@ -59,21 +59,30 @@
 //! - [`Server::get`] and [`Server::post`] add typed application routes:
 //!   a read over one snapshot, or a transaction. Both are documented in
 //!   OpenAPI from their types.
-//! - Writes return the epoch they committed into. Send it back as
-//!   `fold-min-epoch` on a read to read your own writes; the read waits
+//! - Writes return the epoch they committed as. Send it back as
+//!   `bog-min-epoch` on a read to read your own writes; the read waits
 //!   (bounded by [`Server::min_epoch_wait`]) until that epoch is visible.
-//! - [`Server::max_pending_writes`] bounds the writer's queue: past it,
+//! - [`Server::max_pending_writes`] bounds the writes waiting: past it,
 //!   writes get `503 overloaded` with `Retry-After` instead of piling up.
 //!
 //! # Live
 //! Every listing and singleton `GET` also streams: ask with
 //! `Accept: text/event-stream` (as `EventSource` does) and the first event,
 //! `snapshot`, is exactly what the plain `GET` answers; then one `change`
-//! event per commit that touches the resource, `{epoch, changes: [{key?,
-//! value, diff}]}`. Each event's `id` is its epoch, so a reconnect resumes
+//! event per commit that touches the resource, `{epoch, changes: […]}`.
+//! A change is `{key?, op, value?, old?}`: `insert` carries the new
+//! `value`, `delete` the `old` one, `replace` both. Counted kinds
+//! (multisets, grouped views) send `{key?, value, diff}`, the change in
+//! count. Each event's `id` is its epoch, so a reconnect resumes
 //! from `Last-Event-ID` (replayed, or a fresh snapshot when too old). One
-//! hub per resource drains fold's subscription; a client that falls
+//! hub per resource drains bog's subscription; a client that falls
 //! behind gets a fresh snapshot instead of an unbounded backlog.
+//!
+//! A listing's `snapshot` is one page, as its `GET` would answer. To
+//! follow a whole listing, add `snapshot=all` to the stream's query: the
+//! snapshot is then every page (up to [`MAX_SNAPSHOT_ROWS`] rows), read
+//! from one snapshot, as a `snapshot` event for the first and
+//! `snapshot.more` for the rest; apply them in order before any `change`.
 //!
 //! A page following several resources should use `GET /_live`, which
 //! carries any of them on one connection
@@ -89,7 +98,7 @@
 //! - [`Server::discovery`] keeps a JSON file saying where the server is
 //!   (`url` or `socket`, `pid`), so an app can connect to a running one
 //!   or start its own; a second server on the same store fails cleanly
-//!   (fold2 allows one writer).
+//!   (bog locks the store's directory).
 //! - [`Server::idle_exit`] lets an on-demand server leave once unused.
 //! - A loopback bind answers only to `localhost` names (DNS rebinding);
 //!   [`Server::bearer_token`] keeps out other local processes and pages,
@@ -98,14 +107,14 @@
 //!
 //! `GET /_health` reports the epoch, open streams, and pending writes.
 //! Events go to [`tracing`](https://docs.rs/tracing) under the
-//! `fold_http` target. For anything else, [`Server::into_router`] is a
+//! `bog_http` target. For anything else, [`Server::into_router`] is a
 //! plain axum [`Router`](axum::Router).
 //!
 //! # Serving your own kinds
-//! A source or view type from outside fold serves by implementing
+//! A source or view type from outside bog serves by implementing
 //! [`Resource`] (and [`SourceResource`] if writable): describe its
-//! [`Route`]s, answer reads from its facade, stage writes for the writer
-//! thread. The derive needs nothing more.
+//! [`Route`]s, answer reads from its facade, stage writes for the
+//! transaction. The derive needs nothing more.
 
 mod custom;
 mod guard;
@@ -123,19 +132,19 @@ pub mod wire;
 pub use custom::NoParams;
 pub use guard::ACCESS_TOKEN_PARAM;
 
-pub use problem::{IntoProblem, PROBLEM_JSON, Problem};
+pub use problem::{PROBLEM_JSON, Problem};
 pub use resource::{
-    Apply, Call, Describe, Entry, MINT_OP, Method, Mint, Resource, Route, SourceResource, Stage,
-    Wire, Written, inline_schema, schema_in,
+    Apply, Call, Describe, Entry, Live, MINT_OP, Method, Mint, Resource, Route, SourceResource,
+    Stage, Tie, TxFn, Wire, Written, inline_schema, schema_in,
 };
 pub use resources::{
-    BagAdd, BagRemove, By, CompleteParams, Completion, Hit, OrderedParams, SearchParams,
+    By, CompleteParams, Completion, Hit, MultisetAdd, MultisetRemove, OrderedParams, SearchParams,
 };
-pub use server::{Closer, MAX_LIVE, MIN_EPOCH_HEADER, Server};
+pub use server::{Closer, MAX_LIVE, MAX_SNAPSHOT_ROWS, MIN_EPOCH_HEADER, Server};
 
 /// A CORS layer for a browser app on another origin (a dev server, a
 /// desktop shell): these origins only, with the methods and headers the
-/// API uses, exposing `fold-epoch`, `Location`, and `Retry-After`.
+/// API uses, exposing `bog-epoch`, `Location`, and `Retry-After`.
 ///
 /// There is deliberately no "any origin": a server on `localhost` that
 /// any web page may call is one any site you visit can read and write.
@@ -167,14 +176,15 @@ pub fn cors<'a>(origins: impl IntoIterator<Item = &'a str>) -> tower_http::cors:
 pub use tx::MAX_TX_OPS;
 
 #[cfg(feature = "derive")]
-pub use fold_http_derive::Serve;
+pub use bog_http_derive::Serve;
 
 /// A schema servable over HTTP: the list of its served fields.
 ///
 /// Derive it with `#[derive(Serve)]` beside `#[derive(Schema)]`; skip a
-/// field with `#[serve(skip)]`. A hand-written impl builds [`Entry`]s
+/// field with `#[serve(skip)]`, or serve a source's reads only with
+/// `#[serve(read_only)]`. A hand-written impl builds [`Entry`]s
 /// directly.
-pub trait Serve: fold::Declare<Error: IntoProblem> {
+pub trait Serve: bog::schema::Declare {
     fn entries() -> Vec<Entry<Self>>;
 }
 
@@ -183,14 +193,13 @@ pub trait Serve: fold::Declare<Error: IntoProblem> {
 pub mod __private {
     use std::marker::PhantomData;
 
-    use fold::Id;
-    use fold::schema::{Data, Error, SourceDecl, Table};
+    use bog::schema::{Data, Id, SourceDecl, Table};
 
     use crate::{Mint, Wire};
 
-    pub use fold;
+    pub use bog;
 
-    /// Autoref specialization: `(&&Probe::<D>::NEW).mint::<E>()` finds
+    /// Autoref specialization: `(&&Probe::<D>::NEW).mint()` finds
     /// [`MintById`] when `D` is `Table<Id<V>, V>` and [`MintNone`]
     /// otherwise, which the derive can't tell apart from type tokens.
     pub struct Probe<D>(PhantomData<fn() -> D>);
@@ -200,24 +209,24 @@ pub mod __private {
     }
 
     pub trait MintById<D: SourceDecl> {
-        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>>;
+        fn mint(&self) -> Option<Mint<D>>;
     }
 
     impl<V: Data + Wire> MintById<Table<Id<V>, V>> for &Probe<Table<Id<V>, V>> {
-        fn mint<E: Error>(&self) -> Option<Mint<<Table<Id<V>, V> as SourceDecl>::Write<E>, E>> {
+        fn mint(&self) -> Option<Mint<Table<Id<V>, V>>> {
             Some(Mint {
-                stage: crate::resources::mint_table::<V, E>,
+                stage: crate::resources::mint_table::<V>,
                 route: crate::resources::mint_table_route::<V>,
             })
         }
     }
 
     pub trait MintNone<D: SourceDecl> {
-        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>>;
+        fn mint(&self) -> Option<Mint<D>>;
     }
 
     impl<D: SourceDecl> MintNone<D> for Probe<D> {
-        fn mint<E: Error>(&self) -> Option<Mint<D::Write<E>, E>> {
+        fn mint(&self) -> Option<Mint<D>> {
             None
         }
     }

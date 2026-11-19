@@ -18,7 +18,7 @@ async fn insert_mints_an_id_and_reads_back() {
     assert_eq!(res.status, StatusCode::CREATED);
     let id = res.data()["key"].as_u64().unwrap();
     assert_eq!(res.header(header::LOCATION), format!("/customers/{id}"));
-    assert_eq!(res.header("fold-epoch"), res.epoch().to_string());
+    assert_eq!(res.header("bog-epoch"), res.epoch().to_string());
     let written_at = res.epoch();
 
     let res = send(&app, Method::GET, &format!("/customers/{id}"), None).await;
@@ -247,7 +247,7 @@ async fn schema_describes_every_served_field() {
             ("orders", "events"),
             ("tags", "set"),
             ("motd", "cell"),
-            ("stock", "bag"),
+            ("stock", "multiset"),
             ("spend", "map_view"),
             ("ranked", "ordered_view"),
             ("tags_by_len", "group_view"),

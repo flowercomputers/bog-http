@@ -1,20 +1,19 @@
-//! [`Resource`](crate::Resource) impls for fold's declaration types.
+//! [`Resource`](crate::Resource) impls for bog's declaration types.
 //!
-//! Sources (`Table`, `Events`, `Set`, `Cell`, `Bag`) are in [`sources`];
+//! Sources (`Table`, `Events`, `Set`, `Cell`, `Multiset`) are in [`sources`];
 //! views (`MapView`, `OrderedView`, `GroupView`, `ValueView`,
 //! `SearchView`) in [`views`].
 
 mod sources;
 mod views;
 
-pub use sources::{BagAdd, BagRemove};
+pub use sources::{MultisetAdd, MultisetRemove};
 pub(crate) use sources::{mint_table, mint_table_route};
 pub use views::{By, CompleteParams, Completion, Hit, OrderedParams, SearchParams};
 
 use std::ops::Bound;
 
-use fold::Read;
-use fold::schema::Data;
+use bog::schema::{Change, Data, Delta, Read};
 use schemars::SchemaGenerator;
 use serde_json::Value;
 
@@ -42,10 +41,10 @@ fn get_route<K: Wire, V: Wire>(g: &mut SchemaGenerator) -> Route {
 
 /// A `Read<K, V>`'s rows strictly after `after`, in `order`.
 fn keyed_rows<'a, K: Data, V: Data>(
-    read: &'a Read<K, V>,
+    read: &Read<'a, K, V>,
     order: Order,
     after: Option<K>,
-) -> Box<dyn Iterator<Item = (K, V)> + 'a> {
+) -> Box<dyn Iterator<Item = bog::Result<(K, V)>> + 'a> {
     match (order, after) {
         (Order::Asc, None) => Box::new(read.iter()),
         (Order::Asc, Some(k)) => Box::new(read.range((Bound::Excluded(k), Bound::Unbounded))),
@@ -56,20 +55,20 @@ fn keyed_rows<'a, K: Data, V: Data>(
 
 /// A page of a `Read<K, V>` in key order.
 fn list_keyed<K: Data + Wire, V: Data + Wire>(
-    read: &Read<K, V>,
+    read: &Read<'_, K, V>,
     order: Order,
     requested: Option<usize>,
     after: Option<&str>,
 ) -> Result<Value, Problem> {
     let limit = limit(requested, DEFAULT_LIMIT)?;
     let after = after.map(decode_cursor::<K>).transpose()?;
-    let rows = keyed_rows(read, order, after).map(|(key, value)| Row { key, value });
+    let rows = keyed_rows(read, order, after).map(|r| r.map(|(key, value)| Row { key, value }));
     to_json(&paginate(rows, limit, |r| r.key.clone())?)
 }
 
 /// Answer `list` and `get` for any `Read<K, V>`-backed resource.
 fn answer_keyed<K: Data + Wire, V: Data + Wire>(
-    read: &Read<K, V>,
+    read: &Read<'_, K, V>,
     call: &Call,
 ) -> Result<Value, Problem> {
     match call.op {
@@ -79,7 +78,7 @@ fn answer_keyed<K: Data + Wire, V: Data + Wire>(
         }
         "get" => {
             let key: K = call.key()?;
-            match read.get(&key) {
+            match read.get(&key)? {
                 Some(value) => to_json(&value),
                 None => Err(no_row(call)),
             }
@@ -95,16 +94,26 @@ fn no_row(call: &Call) -> Problem {
     ))
 }
 
-/// A change to a keyed row: `{key, value, diff}`.
-fn keyed_change<K: serde::Serialize, V: serde::Serialize>(
-    (key, value): (K, V),
-    diff: fold::Diff,
-) -> Value {
-    serde_json::json!({ "key": key, "value": value, "diff": diff })
+/// A change to one value: `{op: "insert", value}`, `{op: "delete", old}`,
+/// or `{op: "replace", old, value}`.
+fn value_change<V: serde::Serialize>(change: Change<V>) -> Value {
+    match change {
+        Change::Insert(value) => serde_json::json!({ "op": "insert", "value": value }),
+        Change::Delete(old) => serde_json::json!({ "op": "delete", "old": old }),
+        Change::Replace(old, value) => {
+            serde_json::json!({ "op": "replace", "old": old, "value": value })
+        }
+    }
 }
 
-/// A change to an unkeyed value (a member, an element, a singleton):
-/// `{value, diff}`.
-fn value_change<T: serde::Serialize>(value: T, diff: fold::Diff) -> Value {
+/// A change to a keyed row: a [`value_change`] with its `key`.
+fn keyed_change<K: serde::Serialize, V: serde::Serialize>((key, change): (K, Change<V>)) -> Value {
+    let mut out = value_change(change);
+    out["key"] = serde_json::json!(key);
+    out
+}
+
+/// A change in how many of a value there are: `{value, diff}`.
+fn counted_change<T: serde::Serialize>((value, diff): (T, Delta)) -> Value {
     serde_json::json!({ "value": value, "diff": diff })
 }

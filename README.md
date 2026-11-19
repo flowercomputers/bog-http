@@ -1,17 +1,17 @@
-# fold-http
+# bog-http
 
-Serve any [fold2](https://github.com/flowercomputers/fold2) schema as a
+Serve any [bog](https://github.com/flowercomputers/bog) schema as a
 live, typed HTTP API.
 
 ```rust
 #[derive(Schema, Serve)]
 struct Chat {
     messages: Events<Message>,
-    #[view] total: ValueView<Diff>,
+    #[view] total: ValueView<Delta>,
     #[view] search: SearchView<Id<Message>>,
 }
 
-Server::new(Chat::open("./chat.fold").build()?)
+Server::new(Chat::open("./chat.bog").build()?)
     .serve("127.0.0.1:10777", |router| router)
     .await
 ```
@@ -32,5 +32,5 @@ Try it with the gallery's chat:
 cargo run --example chat   # then open http://127.0.0.1:10777
 ```
 
-Builds against `../fold2` on its `fold-http` branch. See the crate docs
+Builds against the `bog-http` branch of the public bog repo. See the crate docs
 (`cargo doc --open`) for the wire contract, and `DESIGN.md` for the why.

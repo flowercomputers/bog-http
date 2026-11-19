@@ -21,5 +21,5 @@ const t: TxBody = [
 // @ts-expect-error: an op the resource doesn't have
 const badTx: TxBody = [{ resource: "orders", op: "upsert", key: 1, body: { customer: 1, cents: 5 } }];
 type Hdr = NonNullable<paths["/prefs/{key}"]["get"]["parameters"]["header"]>;
-const hdr: Hdr = { "fold-min-epoch": 7 };
+const hdr: Hdr = { "bog-min-epoch": 7 };
 export { p, c, h, e, q, bad, t, badTx, hdr };

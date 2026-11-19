@@ -9,12 +9,10 @@
 //! curl -s localhost:10777/_schema
 //! ```
 //!
-//! Data lives in `./shop.fold` (override with `FOLD_DIR`).
+//! Data lives in `./shop.bog` (override with `BOG_DIR`).
 
-use fold::Id;
-use fold::schema::*;
-use fold::storage::Codec;
-use fold_http::{Serve, Server};
+use bog::schema::*;
+use bog_http::{Serve, Server};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +29,7 @@ struct Customer {
 )]
 struct Order {
     customer: Id<Customer>,
-    cents: isize,
+    cents: i64,
 }
 
 #[derive(Schema, Serve)]
@@ -40,16 +38,14 @@ struct Shop {
     orders: Events<Order>,
     /// Customer → total spend, maintained on every write.
     #[view]
-    spend: MapView<Id<Customer>, isize>,
+    spend: MapView<Id<Customer>, i64>,
     /// Region → revenue.
     #[view]
-    revenue: MapView<String, isize>,
+    revenue: MapView<String, i64>,
 }
 
 impl Declare for Shop {
-    type Error = Rejected;
-
-    fn declare(b: &mut ShopBuilder<Rejected>) {
+    fn declare(b: &mut ShopBuilder) {
         b.orders.reject(|o| o.cents <= 0);
         b.orders.foreign_key(&b.customers, |o| o.customer);
         b.spend
@@ -59,7 +55,7 @@ impl Declare for Shop {
                 .key_by(|o| o.customer)
                 .with(&b.customers, |_, o, c| (c.region.clone(), o.cents))
                 .key_by(|(region, _)| region.clone())
-                .map(|(_, cents)| cents)
+                .map(|(_, cents)| *cents)
                 .sum(),
         );
     }
@@ -67,8 +63,9 @@ impl Declare for Shop {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let dir = std::env::var("FOLD_DIR").unwrap_or_else(|_| "./shop.fold".into());
-    let app = Server::new(Shop::open(&dir).build()?).into_router();
+    let dir = std::env::var("BOG_DIR").unwrap_or_else(|_| "./shop.bog".into());
+    let db = Shop::open(&dir).build().map_err(std::io::Error::other)?;
+    let app = Server::new(db).into_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:10777").await?;
     eprintln!("serving {dir} on http://{}", listener.local_addr()?);
     axum::serve(listener, app)

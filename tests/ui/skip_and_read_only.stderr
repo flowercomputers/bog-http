@@ -1,0 +1,5 @@
+error: a skipped field isn't served at all; use `skip` or `read_only`, not both
+ --> tests/ui/skip_and_read_only.rs:7:5
+  |
+7 |     rows: Table<String, i64>,
+  |     ^^^^

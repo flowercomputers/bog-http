@@ -2,15 +2,11 @@
 //! key, query, and body decoding, keyset pagination, and the response
 //! shapes resources share.
 
-use std::ops::Bound;
-
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use fold::Diff;
-use fold::schema::Data;
-use fold::storage::Arrangement;
+use bog::schema::Delta;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -20,7 +16,7 @@ use crate::Problem;
 
 /// The response header carrying the epoch of the snapshot a response was
 /// read at, or the epoch a write committed into.
-pub const EPOCH_HEADER: &str = "fold-epoch";
+pub const EPOCH_HEADER: &str = "bog-epoch";
 
 /// The default page size of a listing.
 pub const DEFAULT_LIMIT: usize = 100;
@@ -29,9 +25,9 @@ pub const MAX_LIMIT: usize = 1000;
 
 /// Every successful response body.
 ///
-/// `epoch` is the snapshot's frontier: the number of transactions it
-/// reflects. A write's epoch is the first snapshot that includes it, so a
-/// read reporting `epoch >= n` has seen every write that reported `n`.
+/// `epoch` is the newest commit the snapshot reflects. A write's epoch
+/// is the one it committed as, so a read reporting `epoch >= n` has seen
+/// every write that reported `n`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope<T> {
     pub epoch: u64,
@@ -160,40 +156,24 @@ pub struct Page<T> {
 /// position, so pages stay stable under concurrent writes and skipping
 /// to a page costs nothing.
 pub fn paginate<T, C: Serialize>(
-    mut rows: impl Iterator<Item = T>,
+    mut rows: impl Iterator<Item = bog::Result<T>>,
     limit: usize,
     position: impl Fn(&T) -> C,
 ) -> Result<Page<T>, Problem> {
     let mut items = Vec::with_capacity(limit.min(64));
     for row in rows.by_ref() {
-        items.push(row);
+        items.push(row?);
         if items.len() == limit {
             break;
         }
     }
     let next = match items.last() {
-        Some(last) if items.len() == limit && rows.next().is_some() => {
+        Some(last) if items.len() == limit && rows.next().transpose()?.is_some() => {
             Some(encode_cursor(&position(last))?)
         }
         _ => None,
     };
     Ok(Page { items, next })
-}
-
-/// An arrangement's rows strictly after `after` in `order`.
-pub fn arranged<'a, T: Data>(
-    arrangement: &'a Arrangement<T>,
-    order: Order,
-    after: Option<T>,
-) -> Box<dyn Iterator<Item = (T, Diff)> + 'a> {
-    match (order, after) {
-        (Order::Asc, None) => Box::new(arrangement.iter()),
-        (Order::Asc, Some(t)) => {
-            Box::new(arrangement.range((Bound::Excluded(t), Bound::Unbounded)))
-        }
-        (Order::Desc, None) => Box::new(arrangement.iter_rev()),
-        (Order::Desc, Some(t)) => Box::new(arrangement.range_rev(..t)),
-    }
 }
 
 /// A keyed row.
@@ -209,7 +189,7 @@ pub struct Row<K, V> {
 #[schemars(rename = "Counted_{T}")]
 pub struct Counted<T> {
     pub value: T,
-    pub count: Diff,
+    pub count: Delta,
 }
 
 /// One value of a key in a grouped view, with its multiplicity.
@@ -218,7 +198,7 @@ pub struct Counted<T> {
 pub struct GroupRow<K, V> {
     pub key: K,
     pub value: V,
-    pub count: Diff,
+    pub count: Delta,
 }
 
 /// The key a write addressed or minted.
@@ -260,12 +240,12 @@ mod tests {
 
     #[test]
     fn pages_end_exactly_at_the_last_row() {
-        let page = paginate(1..=4, 2, |n| *n).unwrap();
+        let page = paginate((1..=4).map(Ok), 2, |n| *n).unwrap();
         assert_eq!(page.items, [1, 2]);
         assert_eq!(decode_cursor::<i32>(&page.next.unwrap()).unwrap(), 2);
-        let page = paginate(1..=4, 4, |n| *n).unwrap();
+        let page = paginate((1..=4).map(Ok), 4, |n| *n).unwrap();
         assert_eq!((page.items.len(), page.next), (4, None));
-        let page = paginate(0..0, 4, |n| *n).unwrap();
+        let page = paginate((0..0).map(Ok), 4, |n| *n).unwrap();
         assert!(page.items.is_empty() && page.next.is_none());
     }
 

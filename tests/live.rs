@@ -149,19 +149,14 @@ async fn a_stream_is_a_snapshot_then_each_commits_changes() {
     );
     assert_eq!(
         change.data,
-        json!({"epoch": put.epoch(), "changes": [{"key": "b", "value": 2, "diff": 1}]})
+        json!({"epoch": put.epoch(), "changes": [{"key": "b", "op": "insert", "value": 2}]})
     );
 
-    // An upsert retracts the old row and adds the new one.
+    // An upsert of a present key is one replace, with the value before.
     send(&app, Method::PUT, "/prefs/a", Some(json!(5))).await;
-    let mut changes = s.next().await.data["changes"].as_array().unwrap().clone();
-    changes.sort_by_key(|c| c["diff"].as_i64());
     assert_eq!(
-        changes,
-        [
-            json!({"key": "a", "value": 1, "diff": -1}),
-            json!({"key": "a", "value": 5, "diff": 1})
-        ]
+        s.next().await.data["changes"],
+        json!([{"key": "a", "op": "replace", "old": 1, "value": 5}])
     );
 
     // Writes elsewhere don't reach this stream; one transaction is one
@@ -179,7 +174,13 @@ async fn a_stream_is_a_snapshot_then_each_commits_changes() {
     .await;
     let next = s.next().await;
     assert_eq!(next.id, Some(tx.epoch()));
-    assert_eq!(next.data["changes"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        next.data["changes"],
+        json!([
+            {"key": "b", "op": "delete", "old": 2},
+            {"key": "c", "op": "insert", "value": 3},
+        ])
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -207,13 +208,67 @@ async fn singletons_and_views_stream_too() {
     .await;
     assert_eq!(
         count.next().await.data["changes"],
-        json!([{"value": 1, "diff": 1}])
+        json!([{"op": "insert", "value": 1}])
     );
 
     send(&app, Method::PUT, "/motd", Some(json!("hi"))).await;
     assert_eq!(
         motd.next().await.data["changes"],
-        json!([{"value": "hi", "diff": 1}])
+        json!([{"op": "insert", "value": "hi"}])
+    );
+    send(&app, Method::DELETE, "/motd", None).await;
+    assert_eq!(
+        motd.next().await.data["changes"],
+        json!([{"op": "delete", "old": "hi"}])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sets_and_counted_kinds_stream_their_own_shapes() {
+    let app = app();
+    let mut tags = Stream::open(&app, "/tags", None).await.unwrap();
+    let mut by_len = Stream::open(&app, "/tags_by_len", None).await.unwrap();
+    let mut stock = Stream::open(&app, "/stock", None).await.unwrap();
+    for s in [&mut tags, &mut by_len, &mut stock] {
+        s.next().await;
+    }
+
+    // A set's member comes or goes; a grouped view counts it.
+    send(&app, Method::PUT, "/tags/xy", None).await;
+    assert_eq!(
+        tags.next().await.data["changes"],
+        json!([{"op": "insert", "value": "xy"}])
+    );
+    assert_eq!(
+        by_len.next().await.data["changes"],
+        json!([{"key": 2, "value": "xy", "diff": 1}])
+    );
+    send(&app, Method::DELETE, "/tags/xy", None).await;
+    assert_eq!(
+        tags.next().await.data["changes"],
+        json!([{"op": "delete", "value": "xy"}])
+    );
+    assert_eq!(
+        by_len.next().await.data["changes"],
+        json!([{"key": 2, "value": "xy", "diff": -1}])
+    );
+
+    // A multiset's change is a change in count.
+    send(
+        &app,
+        Method::POST,
+        "/stock",
+        Some(json!({"value": "lp", "times": 3})),
+    )
+    .await;
+    assert_eq!(
+        stock.next().await.data["changes"],
+        json!([{"value": "lp", "diff": 3}])
+    );
+    send(&app, Method::DELETE, "/stock/lp?times=2", None).await;
+    assert_eq!(
+        stock.next().await.data["changes"],
+        json!([{"value": "lp", "diff": -2}])
     );
 }
 
@@ -265,7 +320,7 @@ async fn a_client_that_falls_behind_gets_a_fresh_snapshot() {
     let mut s = Stream::open(&app, "/prefs?limit=1", None).await.unwrap();
     assert_eq!(s.next().await.event, "snapshot");
     // Far more commits than the hub buffers, while this client reads none.
-    let n = fold_http_ring() + 100;
+    let n = bog_http_ring() + 100;
     for i in 0..n {
         send(
             &app,
@@ -292,7 +347,7 @@ async fn a_client_that_falls_behind_gets_a_fresh_snapshot() {
     assert!(resynced, "lagging past the buffer resyncs with a snapshot");
 }
 
-fn fold_http_ring() -> usize {
+fn bog_http_ring() -> usize {
     1024
 }
 
@@ -351,7 +406,7 @@ async fn closing_the_server_ends_its_streams() {
 #[cfg(feature = "cors")]
 #[tokio::test]
 async fn cors_admits_only_the_listed_origins() {
-    let app = app().layer(fold_http::cors(["http://localhost:5173"]));
+    let app = app().layer(bog_http::cors(["http://localhost:5173"]));
     let preflight = |origin: &'static str| {
         Request::builder()
             .method(Method::OPTIONS)
@@ -360,7 +415,7 @@ async fn cors_admits_only_the_listed_origins() {
             .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PUT")
             .header(
                 header::ACCESS_CONTROL_REQUEST_HEADERS,
-                "content-type,fold-min-epoch",
+                "content-type,bog-min-epoch",
             )
             .body(Body::empty())
             .unwrap()
@@ -394,7 +449,7 @@ async fn cors_admits_only_the_listed_origins() {
         .to_str()
         .unwrap()
         .to_owned();
-    assert!(exposed.contains("fold-epoch"), "{exposed}");
+    assert!(exposed.contains("bog-epoch"), "{exposed}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -423,7 +478,7 @@ async fn one_connection_carries_many_resources() {
     assert_eq!(e.event, "motd.change");
     assert_eq!(
         e.data,
-        json!({"epoch": put.epoch(), "changes": [{"value": "hi", "diff": 1}]})
+        json!({"epoch": put.epoch(), "changes": [{"op": "insert", "value": "hi"}]})
     );
     let id = e.id_text.clone().unwrap();
     let parts: Vec<u64> = id.split('.').map(|p| p.parse().unwrap()).collect();
@@ -475,4 +530,87 @@ async fn a_multiplexed_stream_refuses_what_it_cant_carry() {
             .unwrap();
         assert_eq!(err.0, status, "{query}: {:?}", err.1);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_all_sends_the_whole_listing_at_one_epoch() {
+    let app = app();
+    for i in 0..5 {
+        send(&app, Method::PUT, &format!("/prefs/k{i}"), Some(json!(i))).await;
+    }
+    let mut s = Stream::open(&app, "/prefs?limit=2&snapshot=all", None)
+        .await
+        .unwrap();
+    let mut keys = Vec::new();
+    let mut epochs = Vec::new();
+    for (n, kind) in ["snapshot", "snapshot.more", "snapshot.more"]
+        .iter()
+        .enumerate()
+    {
+        let page = s.next().await;
+        assert_eq!(&page.event, kind);
+        epochs.push(page.data["epoch"].as_u64().unwrap());
+        for row in page.data["data"]["items"].as_array().unwrap() {
+            keys.push(row["key"].as_str().unwrap().to_owned());
+        }
+        if n < 2 {
+            assert_eq!(
+                page.id_text.as_deref(),
+                Some("-"),
+                "mid-snapshot: nothing to resume"
+            );
+        } else {
+            assert_eq!(
+                page.id,
+                Some(epochs[0]),
+                "the last page is the resume point"
+            );
+            assert!(page.data["data"]["next"].is_null());
+        }
+    }
+    assert_eq!(keys, ["k0", "k1", "k2", "k3", "k4"]);
+    assert!(
+        epochs.iter().all(|e| *e == epochs[0]),
+        "one snapshot: {epochs:?}"
+    );
+
+    let put = send(&app, Method::PUT, "/prefs/k9", Some(json!(9))).await;
+    let change = s.next().await;
+    assert_eq!(
+        (change.event.as_str(), change.id),
+        ("change", Some(put.epoch()))
+    );
+
+    // On `/_live`, per resource, inside its own query.
+    let mut s = Stream::open(&app, "/_live?prefs=limit%3D4%26snapshot%3Dall", None)
+        .await
+        .unwrap();
+    let first = s.next().await;
+    assert_eq!(
+        (first.event.as_str(), first.id_text.as_deref()),
+        ("prefs.snapshot", Some("-"))
+    );
+    let last = s.next().await;
+    assert_eq!(last.event, "prefs.snapshot.more");
+    assert_eq!(last.id, Some(put.epoch()));
+    assert_eq!(last.data["data"]["items"].as_array().unwrap().len(), 2);
+
+    // Without it, the snapshot is one page, as before.
+    let mut s = Stream::open(&app, "/prefs?limit=2", None).await.unwrap();
+    let page = s.next().await;
+    assert_eq!(page.event, "snapshot");
+    assert!(page.data["data"]["next"].is_string());
+    assert_eq!(page.id, Some(put.epoch()));
+
+    let (status, _) = Stream::open(&app, "/prefs?snapshot=some", None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let plain = send(&app, Method::GET, "/prefs?snapshot=all", None).await;
+    assert_eq!(
+        plain.status,
+        StatusCode::BAD_REQUEST,
+        "a stream option only"
+    );
 }

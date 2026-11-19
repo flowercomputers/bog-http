@@ -1,4 +1,4 @@
-//! [`Resource`]: how one schema field is served. Implemented on fold's
+//! [`Resource`]: how one schema field is served. Implemented on bog's
 //! declaration types (`Table<K, V>`, `MapView<K, V>`, …), so the derive
 //! never inspects a field's type — it asks the type.
 //!
@@ -7,11 +7,11 @@
 //! document, so the three can't drift apart.
 
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use fold::schema::Error;
-use fold::{Closed, Declare, Diff, SourceDecl, Subscription, WriteOf};
+use bog::schema::{Closed, Schema, SourceDecl, Subscription};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -185,7 +185,7 @@ impl Route {
 #[derive(Debug, Clone, Serialize)]
 pub struct Describe {
     pub name: String,
-    /// The fold kind, `snake_case` (`table`, `events`, `map_view`, …).
+    /// The bog kind, `snake_case` (`table`, `events`, `map_view`, …).
     /// An open set: third-party kinds name themselves.
     pub kind: &'static str,
     /// The field's doc comment.
@@ -194,7 +194,7 @@ pub struct Describe {
     /// JSON Schema of the key, for keyed resources.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Value>,
-    /// JSON Schema of the value (a set's member, a bag's element).
+    /// JSON Schema of the value (a set's member, a multiset's element).
     pub value: Value,
     pub routes: Vec<Route>,
 }
@@ -296,54 +296,60 @@ impl Written {
     }
 }
 
-/// A typed write, decoded off the writer thread and applied on it.
-pub type Apply<W, E> = Box<dyn FnOnce(&mut W) -> Result<Written, E> + Send>;
+/// A typed write on source `D`'s write facade, decoded on the request's
+/// thread and applied inside the transaction.
+pub type Apply<D> =
+    Box<dyn for<'a> FnOnce(&<D as SourceDecl>::Write<'a>) -> bog::Result<Written> + Send>;
 
 /// Decode a write call into an [`Apply`].
-pub type Stage<W, E> = fn(Call) -> Result<Apply<W, E>, Problem>;
+pub type Stage<D> = fn(Call) -> Result<Apply<D>, Problem>;
+
+/// A whole transaction on schema `S`, staged: runs once, inside
+/// [`Db::write`](bog::schema::Db::write).
+pub type TxFn<S> =
+    Box<dyn for<'a> FnOnce(&mut <S as Schema>::Write<'a>) -> bog::Result<Written> + Send>;
 
 /// An extra `POST` route a source gains from its key type (a
 /// `Table<Id<V>, V>` minting ids), which its own impl can't express.
-pub struct Mint<W, E> {
-    pub stage: Stage<W, E>,
+pub struct Mint<D: SourceDecl> {
+    pub stage: Stage<D>,
     pub route: fn(&mut SchemaGenerator) -> Route,
 }
 
 /// The op of a [`Mint`] route.
 pub const MINT_OP: &str = "insert";
 
-/// A resource's change feed: a fold [`Subscription`] whose rows render
-/// as JSON. Each poll yields one commit's changes, consolidated, with the
-/// commit's outer epoch.
+/// A resource's change feed: a bog [`Subscription`] whose changes
+/// render as JSON. Each poll yields one commit's changes with the epoch
+/// it committed as.
 ///
-/// [`Subscription`]: fold::Subscription
+/// [`Subscription`]: bog::schema::Subscription
 pub struct Live {
     poll: Box<dyn FnMut(Duration) -> Result<Option<(u64, Vec<Value>)>, Closed> + Send>,
 }
 
 impl Live {
-    /// Render each `(row, diff)` of `sub` with `row`: a positive diff
-    /// arrives, a negative one retracts (an upsert is both).
-    pub fn new<T: Send + 'static>(
+    /// Render each change of `sub` with `change`.
+    pub fn new<T: 'static>(
         sub: Subscription<T>,
-        row: impl Fn(T, Diff) -> Value + Send + 'static,
+        change: impl Fn(T) -> Value + Send + 'static,
     ) -> Self {
         Live {
             poll: Box::new(move |wait| {
-                Ok(sub.recv_timeout(wait)?.map(|delta| {
-                    let rows = delta
-                        .rows
-                        .into_iter()
-                        .map(|(t, diff)| row(t, diff))
-                        .collect();
-                    (delta.outer, rows)
-                }))
+                Ok(sub
+                    .recv_timeout(wait)?
+                    // a commit whose changes all cancelled out says nothing
+                    .filter(|commit| !commit.changes.is_empty())
+                    .map(|commit| {
+                        let changes = commit.changes.into_iter().map(&change).collect();
+                        (commit.epoch, changes)
+                    }))
             }),
         }
     }
 
-    /// The next commit's `(outer epoch, changes)`, waiting up to `wait`;
-    /// `Err` once the database has closed.
+    /// The next commit's `(epoch, changes)`, waiting up to `wait`; `Err`
+    /// once the database has closed.
     pub fn poll(&mut self, wait: Duration) -> Result<Option<(u64, Vec<Value>)>, Closed> {
         (self.poll)(wait)
     }
@@ -353,41 +359,46 @@ impl Live {
 pub trait Resource: 'static {
     /// The read facade this resource is served from: the field's type in
     /// the schema's derived read struct.
-    type Facade;
+    type Facade<'a>;
 
     /// Describe the resource; schemas go through `g` so the whole
     /// document shares one set of components.
     fn describe(name: &str, g: &mut SchemaGenerator) -> Describe;
 
     /// Answer a `GET` route from one snapshot's facade.
-    fn answer(facade: &Self::Facade, call: &Call) -> Result<Value, Problem>;
+    fn answer(facade: &Self::Facade<'_>, call: &Call) -> Result<Value, Problem>;
 
     /// The resource's change feed, subscribed at the facade's snapshot,
     /// for its [`live`](Route::live) routes. `None`: not streamable.
-    fn live(facade: &Self::Facade) -> Option<Live> {
+    fn live(facade: &Self::Facade<'_>) -> Option<Live> {
         let _ = facade;
         None
     }
 }
 
-/// A source field: also writable.
-pub trait SourceResource: SourceDecl + Resource<Facade = <Self as SourceDecl>::Read> {
+/// A source field: also writable. Its [`Facade`](Resource::Facade) is
+/// its [`SourceDecl::Read`].
+pub trait SourceResource: SourceDecl + Resource {
     /// Decode a write route's call into a write on this source's write
     /// facade. Runs on the request's thread, so malformed requests never
-    /// reach the writer.
-    fn stage<E: Error>(call: Call) -> Result<Apply<Self::Write<E>, E>, Problem>;
+    /// open a transaction.
+    fn stage(call: Call) -> Result<Apply<Self>, Problem>;
 }
 
+/// The second argument of a field accessor: it names the facades'
+/// lifetime `'a`, which a `fn` pointer can't bind from `S::Read<'a>`
+/// alone, a projection. Pass `PhantomData`.
+pub type Tie<'a> = PhantomData<&'a ()>;
+
 type ReadFn<S> =
-    Box<dyn Fn(&<S as fold::Schema>::Read, &Call) -> Result<Value, Problem> + Send + Sync>;
-type StageFn<S> =
-    Box<dyn Fn(Call) -> Result<Apply<WriteOf<S>, <S as Declare>::Error>, Problem> + Send + Sync>;
+    Box<dyn for<'a> Fn(&<S as Schema>::Read<'a>, &Call) -> Result<Value, Problem> + Send + Sync>;
+type StageFn<S> = Box<dyn Fn(Call) -> Result<TxFn<S>, Problem> + Send + Sync>;
 type DescribeFn = Box<dyn Fn(&str, &mut SchemaGenerator) -> Describe + Send + Sync>;
-type LiveFn<S> = Box<dyn Fn(&<S as fold::Schema>::Read) -> Option<Live> + Send + Sync>;
+type LiveFn<S> = Box<dyn for<'a> Fn(&<S as Schema>::Read<'a>) -> Option<Live> + Send + Sync>;
 
 /// One served field of schema `S`, type-erased. Built by
 /// `#[derive(Serve)]`; also the escape hatch for hand-written impls.
-pub struct Entry<S: Declare> {
+pub struct Entry<S: Schema> {
     pub(crate) name: String,
     pub(crate) description: Option<String>,
     pub(crate) describe: DescribeFn,
@@ -397,14 +408,26 @@ pub struct Entry<S: Declare> {
 }
 
 impl<S: Serve> Entry<S> {
-    /// A read-only field: a view.
-    pub fn view<D: Resource>(name: &str, facade: fn(&S::Read) -> &D::Facade) -> Self {
+    /// A read-only field: a view, or a source served
+    /// `#[serve(read_only)]` (its write routes are dropped).
+    pub fn view<D: Resource>(
+        name: &str,
+        facade: for<'r, 'a> fn(&'r S::Read<'a>, Tie<'a>) -> &'r D::Facade<'a>,
+    ) -> Self {
         Entry {
             name: name.to_owned(),
             description: None,
-            describe: Box::new(D::describe),
-            read: Box::new(move |r, call| D::answer(facade(r), call)),
-            live: Box::new(move |r| D::live(facade(r))),
+            // A source served read-only describes its writes too: leave
+            // them out of the router, `/_schema`, OpenAPI, and `/_tx`.
+            describe: Box::new(|name, g| {
+                let mut d = D::describe(name, g);
+                d.routes.retain(|r| r.method.is_read());
+                d
+            }),
+            read: Box::new(move |r: &S::Read<'_>, call: &Call| {
+                D::answer(facade(r, PhantomData), call)
+            }),
+            live: Box::new(move |r: &S::Read<'_>| D::live(facade(r, PhantomData))),
             stage: None,
         }
     }
@@ -412,9 +435,9 @@ impl<S: Serve> Entry<S> {
     /// A source field, with its [`Mint`] route if it has one.
     pub fn source<D: SourceResource>(
         name: &str,
-        facade: fn(&S::Read) -> &D::Facade,
-        write: fn(&mut WriteOf<S>) -> &mut D::Write<S::Error>,
-        mint: Option<Mint<D::Write<S::Error>, S::Error>>,
+        facade: for<'r, 'a> fn(&'r S::Read<'a>, Tie<'a>) -> &'r D::Facade<'a>,
+        write: for<'r, 'a> fn(&'r S::Write<'a>, Tie<'a>) -> &'r <D as SourceDecl>::Write<'a>,
+        mint: Option<Mint<D>>,
     ) -> Self {
         let (mint_stage, mint_route) = match mint {
             Some(m) => (Some(m.stage), Some(m.route)),
@@ -430,14 +453,18 @@ impl<S: Serve> Entry<S> {
                     None => describe,
                 }
             }),
-            read: Box::new(move |r, call| D::answer(facade(r), call)),
-            live: Box::new(move |r| D::live(facade(r))),
+            read: Box::new(move |r: &S::Read<'_>, call: &Call| {
+                D::answer(facade(r, PhantomData), call)
+            }),
+            live: Box::new(move |r: &S::Read<'_>| D::live(facade(r, PhantomData))),
             stage: Some(Box::new(move |call| {
                 let apply = match mint_stage {
                     Some(mint) if call.op == MINT_OP => mint(call)?,
-                    _ => D::stage::<S::Error>(call)?,
+                    _ => D::stage(call)?,
                 };
-                Ok(Box::new(move |w: &mut WriteOf<S>| apply(write(w))))
+                let tx: TxFn<S> =
+                    Box::new(move |w: &mut S::Write<'_>| apply(write(w, PhantomData)));
+                Ok(tx)
             })),
         }
     }

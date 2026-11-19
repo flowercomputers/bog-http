@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter, get, post};
-use fold::{Db, Reader, Tx, Writer};
+use bog::schema::Db;
 use futures_util::StreamExt;
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, SchemaGenerator};
@@ -22,17 +22,17 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, broadcast, watch};
 
-use crate::custom::{CUSTOM_OP, Custom, Handler, TxFn, check_path};
+use crate::custom::{CUSTOM_OP, Custom, Handler, check_path};
 use crate::guard::Guard;
 use crate::live::{Change, Hubs};
 use crate::openapi::{self, Info};
-use crate::resource::{Call, Describe, Entry, Method, Route, Written};
+use crate::resource::{Call, Describe, Entry, Method, Route, TxFn, Written};
 use crate::tx::{self, TxOp};
 use crate::wire::{parse_body, parse_query, require_json, respond, to_json};
-use crate::{IntoProblem, Problem, Serve};
+use crate::{Problem, Serve};
 
 /// The request header naming the least epoch a read must reflect.
-pub const MIN_EPOCH_HEADER: &str = "fold-min-epoch";
+pub const MIN_EPOCH_HEADER: &str = "bog-min-epoch";
 
 /// Serves one database: every resource its schema exposes, custom
 /// routes, `POST /_tx`, the `/_`-prefixed meta routes, and
@@ -44,8 +44,7 @@ pub const MIN_EPOCH_HEADER: &str = "fold-min-epoch";
 ///
 /// [`into_router`]: Server::into_router
 pub struct Server<S: Serve> {
-    pub(crate) reader: Reader<S>,
-    pub(crate) writer: Writer<S>,
+    pub(crate) db: Arc<Db<S>>,
     pub(crate) title: String,
     pub(crate) version: String,
     pub(crate) description: Option<String>,
@@ -131,8 +130,7 @@ impl Closer {
 }
 
 struct Shared<S: Serve> {
-    reader: Reader<S>,
-    writer: Writer<S>,
+    db: Arc<Db<S>>,
     entries: Vec<Entry<S>>,
     described: Vec<Describe>,
     custom: Vec<Custom<S>>,
@@ -153,24 +151,12 @@ struct Shared<S: Serve> {
 type St<S> = State<Arc<Shared<S>>>;
 
 impl<S: Serve> Server<S> {
-    /// Serve `db`, moving it onto its own writer thread (see
-    /// [`Db::serve`]). The database closes once the router, and every
-    /// clone of it, is dropped.
-    pub fn new(db: Db<S>) -> Self
-    where
-        Db<S>: Send,
-    {
-        let (reader, writer) = db.serve();
-        Server::from_parts(reader, writer)
-    }
-
-    /// Serve an already-served database, sharing its writer with the
-    /// rest of the application.
-    pub fn from_parts(reader: Reader<S>, writer: Writer<S>) -> Self {
+    /// Serve `db`. Pass a `Db` to hand it over, or an `Arc<Db>` to keep
+    /// reading and writing it from the rest of the application.
+    pub fn new(db: impl Into<Arc<Db<S>>>) -> Self {
         let name = std::any::type_name::<S>();
         Server {
-            reader,
-            writer,
+            db: db.into(),
             title: name.rsplit("::").next().unwrap_or(name).to_owned(),
             version: "0".to_owned(),
             description: None,
@@ -222,7 +208,7 @@ impl<S: Serve> Server<S> {
         self
     }
 
-    /// The OpenAPI `info.version` (of your API, not of fold-http).
+    /// The OpenAPI `info.version` (of your API, not of bog-http).
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
@@ -233,7 +219,7 @@ impl<S: Serve> Server<S> {
         self
     }
 
-    /// How long a read with `fold-min-epoch` waits for that epoch before
+    /// How long a read with `bog-min-epoch` waits for that epoch before
     /// answering `503 epoch-not-reached`. 5 s by default.
     pub fn min_epoch_wait(mut self, wait: Duration) -> Self {
         self.min_epoch_wait = wait;
@@ -266,7 +252,7 @@ impl<S: Serve> Server<S> {
     where
         Q: DeserializeOwned + JsonSchema + 'static,
         R: Serialize + JsonSchema + 'static,
-        F: Fn(&S::Read, Q) -> Result<R, Problem> + Send + Sync + 'static,
+        F: Fn(&S::Read<'_>, Q) -> Result<R, Problem> + Send + Sync + 'static,
     {
         check_path(path);
         let (p, s) = (path.to_owned(), summary.to_owned());
@@ -277,14 +263,18 @@ impl<S: Serve> Server<S> {
                     .query::<Q>()
                     .response::<R>(g)
             }),
-            handler: Handler::Read(Arc::new(move |r, call| to_json(&f(r, call.query()?)?))),
+            handler: Handler::Read(Arc::new(move |r: &S::Read<'_>, call: &Call| {
+                to_json(&f(r, call.query()?)?)
+            })),
         });
         self
     }
 
     /// A custom write: `POST path` with a JSON body `B`, run by `f` as
-    /// one transaction. `f`'s `Err` rolls everything back and answers
-    /// through [`IntoProblem`]; so do the schema's constraints.
+    /// one transaction. `f`'s `Err` rolls everything back and answers as
+    /// a [`Problem`] (see its `From<bog::Error>`); so do the schema's
+    /// constraints. To refuse with a status of your own, return
+    /// `Err(bog::Error::reject(Problem::…))`.
     ///
     /// # Panics
     /// As [`get`](Server::get).
@@ -292,7 +282,7 @@ impl<S: Serve> Server<S> {
     where
         B: DeserializeOwned + JsonSchema + Send + 'static,
         R: Serialize + JsonSchema + 'static,
-        F: Fn(&mut Tx<'_, S>, B) -> Result<R, S::Error> + Send + Sync + 'static,
+        F: Fn(&mut S::Write<'_>, B) -> bog::Result<R> + Send + Sync + 'static,
     {
         check_path(path);
         let (p, s) = (path.to_owned(), summary.to_owned());
@@ -307,7 +297,8 @@ impl<S: Serve> Server<S> {
             handler: Handler::Write(Arc::new(move |call| {
                 let body: B = call.body()?;
                 let f = f.clone();
-                let apply: TxFn<S> = Box::new(move |tx| Ok(Written::ok(&f(tx, body)?)));
+                let apply: TxFn<S> =
+                    Box::new(move |tx: &mut S::Write<'_>| Ok(Written::ok(&f(tx, body)?)));
                 Ok(apply)
             })),
         });
@@ -342,13 +333,12 @@ impl<S: Serve> Server<S> {
         let (described, custom_routes, schemas) = describe(&entries, &self.custom);
         let openapi = openapi::document(&self.info(), &described, &custom_routes, schemas.clone());
         let schema = json!({ "resources": &described, "components": { "schemas": schemas } });
-        let committed = watch::Sender::new(self.reader.snapshot().frontier().outer);
+        let committed = watch::Sender::new(self.db.snapshot().epoch());
         let body_limit = self.body_limit;
         let guard = self.guard.clone();
         let activity = self.activity.clone();
         let shared = Arc::new(Shared {
-            reader: self.reader,
-            writer: self.writer,
+            db: self.db,
             entries,
             described,
             custom: self.custom,
@@ -515,7 +505,7 @@ impl<S: Serve> Mounted<S> {
 fn health<S: Serve>(st: &Shared<S>) -> axum::Json<Value> {
     axum::Json(json!({
         "status": "ok",
-        "epoch": st.reader.snapshot().frontier().outer,
+        "epoch": st.db.snapshot().epoch(),
         "streams": st.activity.streams.load(std::sync::atomic::Ordering::Relaxed),
         "pending_writes": st.max_pending_writes - st.permits.available_permits(),
     }))
@@ -582,7 +572,7 @@ async fn resource<S: Serve>(
         Ok(apply) => apply,
         Err(problem) => return problem.into_response(),
     };
-    match commit(&st, Box::new(move |tx| apply(&mut **tx))).await {
+    match commit(&st, apply).await {
         Ok((epoch, written)) => {
             let status = if written.created {
                 StatusCode::CREATED
@@ -668,11 +658,11 @@ async fn transaction<S: Serve>(st: Arc<Shared<S>>, headers: HeaderMap, body: Byt
 }
 
 /// Answer a read from one fresh snapshot (at or after the request's
-/// `fold-min-epoch`), off the async workers.
+/// `bog-min-epoch`), off the async workers.
 async fn read<S: Serve>(
     st: Arc<Shared<S>>,
     headers: &HeaderMap,
-    answer: impl FnOnce(&Shared<S>, &S::Read) -> Result<Value, Problem> + Send + 'static,
+    answer: impl FnOnce(&Shared<S>, &S::Read<'_>) -> Result<Value, Problem> + Send + 'static,
 ) -> Response {
     if let Err(problem) = reach_min_epoch(&st, headers).await {
         return problem.into_response();
@@ -687,12 +677,12 @@ async fn read<S: Serve>(
 /// the snapshot's epoch.
 async fn snapshot<S: Serve>(
     st: Arc<Shared<S>>,
-    answer: impl FnOnce(&Shared<S>, &S::Read) -> Result<Value, Problem> + Send + 'static,
+    answer: impl FnOnce(&Shared<S>, &S::Read<'_>) -> Result<Value, Problem> + Send + 'static,
 ) -> Result<(u64, Value), Problem> {
     tokio::task::spawn_blocking(move || {
-        let snap = st.reader.snapshot();
-        let facades = st.reader.at(&snap);
-        answer(&st, &facades).map(|data| (snap.frontier().outer, data))
+        let snap = st.db.snapshot();
+        let facades = st.db.at(&snap);
+        answer(&st, &facades).map(|data| (snap.epoch(), data))
     })
     .await
     .map_err(|e| Problem::internal(format!("read failed: {e}")))?
@@ -717,6 +707,10 @@ fn wants_events(headers: &HeaderMap) -> bool {
 /// the resource; each event's `id` is its epoch. A reconnect carrying
 /// `Last-Event-ID` resumes from the hub's ring when it can, and gets a
 /// fresh snapshot when it can't; so does a client that falls behind.
+///
+/// With `snapshot=all` in the query, a listing's snapshot is the whole
+/// listing: the first page as `snapshot`, then each further page as
+/// `snapshot.more`, all read from one snapshot (see [`snapshot_items`]).
 async fn stream<S: Serve>(
     st: Arc<Shared<S>>,
     i: usize,
@@ -732,12 +726,14 @@ async fn stream<S: Serve>(
         Err(problem) => return problem.into_response(),
     };
     let events = items.map(|item| {
-        Ok::<_, std::convert::Infallible>(
-            Event::default()
-                .event(item.kind)
-                .id(item.epoch.to_string())
-                .data(item.data),
-        )
+        // Mid-snapshot, there's nothing to resume from: an id that
+        // isn't an epoch makes a reconnect start over.
+        let id = if item.partial {
+            PARTIAL_ID.to_owned()
+        } else {
+            item.epoch.to_string()
+        };
+        Ok::<_, std::convert::Infallible>(Event::default().event(item.kind).id(id).data(item.data))
     });
     Sse::new(events)
         .keep_alive(KeepAlive::default())
@@ -813,14 +809,14 @@ async fn multiplex<S: Serve>(
             Err(problem) => return problem.into_response(),
         }
     }
-    let mut epochs = vec![0u64; feeds.len()];
+    let mut epochs = vec![0u64.to_string(); feeds.len()];
     let events = futures_util::stream::select_all(feeds).map(move |(k, name, item)| {
-        epochs[k] = item.epoch;
-        let id = epochs
-            .iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(".");
+        epochs[k] = if item.partial {
+            PARTIAL_ID.to_owned()
+        } else {
+            item.epoch.to_string()
+        };
+        let id = epochs.join(".");
         Ok::<_, std::convert::Infallible>(
             Event::default()
                 .event(format!("{name}.{}", item.kind))
@@ -845,7 +841,17 @@ struct Item {
     kind: &'static str,
     epoch: u64,
     data: String,
+    /// A snapshot page with more to follow: not a point to resume from.
+    partial: bool,
 }
+
+/// The `id` (or `/_live` id component) of a snapshot page with more to
+/// follow: not an epoch, so a reconnect gets a fresh snapshot.
+const PARTIAL_ID: &str = "-";
+
+/// The most rows a `snapshot=all` snapshot sends. Past it, the last page
+/// keeps its `next` cursor: the client can tell it was cut short.
+pub const MAX_SNAPSHOT_ROWS: usize = 100_000;
 
 /// Resource `i`'s feed for one client: a snapshot (or a replay from
 /// `resume`), then every later change, resyncing with a snapshot if the
@@ -853,15 +859,19 @@ struct Item {
 async fn feed<S: Serve>(
     st: Arc<Shared<S>>,
     i: usize,
-    call: Call,
+    mut call: Call,
     resume: Option<u64>,
 ) -> Result<impl futures_util::Stream<Item = Item> + Send + 'static, Problem> {
+    let all = take_snapshot_all(&mut call)?;
     let joined = st
         .hubs
         .join(i, resume, || {
-            let snap = st.reader.snapshot();
-            let facades = st.reader.at(&snap);
-            (st.entries[i].live)(&facades).map(|live| (snap.frontier().outer, live))
+            let snap = st.db.snapshot();
+            let live = (st.entries[i].live)(&st.db.at(&snap))?;
+            // bog subscribes from the snapshot's epoch, but a commit
+            // published between the two is not delivered: only changes
+            // after a snapshot taken now are certain to arrive.
+            Some((st.db.snapshot().epoch(), live))
         })
         .ok_or_else(|| Problem::not_acceptable("this resource doesn't stream"))?;
 
@@ -876,9 +886,9 @@ async fn feed<S: Serve>(
             // Subscribed already: take the snapshot now, and the tail
             // above its epoch is exactly what it lacks. A malformed query
             // fails here, as a plain problem rather than a stream.
-            let item = snapshot_item(&st, i, &call).await?;
-            let floor = item.epoch;
-            queue.push_back(item);
+            let items = snapshot_items(&st, i, &call, all).await?;
+            let floor = items[0].epoch;
+            queue.extend(items);
             floor
         }
     };
@@ -889,6 +899,7 @@ async fn feed<S: Serve>(
         st,
         i,
         call,
+        all,
         rx: joined.rx,
         floor,
         queue,
@@ -911,11 +922,11 @@ async fn feed<S: Serve>(
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::debug!(target: "fold_http", resource = %f.st.described[f.i].name, missed, "stream fell behind: resyncing");
-                    match snapshot_item(&f.st, f.i, &f.call).await {
-                        Ok(item) => {
-                            f.floor = item.epoch;
-                            f.queue.push_back(item);
+                    tracing::debug!(target: "bog_http", resource = %f.st.described[f.i].name, missed, "stream fell behind: resyncing");
+                    match snapshot_items(&f.st, f.i, &f.call, f.all).await {
+                        Ok(items) => {
+                            f.floor = items[0].epoch;
+                            f.queue.extend(items);
                         }
                         Err(_) => return None,
                     }
@@ -931,6 +942,8 @@ struct Feed<S: Serve> {
     st: Arc<Shared<S>>,
     i: usize,
     call: Call,
+    /// Snapshots carry the whole listing (`snapshot=all`).
+    all: bool,
     rx: broadcast::Receiver<Arc<Change>>,
     /// The newest epoch this client has: changes at or below it are
     /// already in what it was sent.
@@ -940,18 +953,95 @@ struct Feed<S: Serve> {
     _open: Open,
 }
 
-async fn snapshot_item<S: Serve>(
+/// Resource `i`'s snapshot events: what its `GET` answers, or with
+/// `all`, every page of the listing, each read from the same snapshot so
+/// together they are one consistent state at one epoch.
+async fn snapshot_items<S: Serve>(
     st: &Arc<Shared<S>>,
     i: usize,
     call: &Call,
-) -> Result<Item, Problem> {
-    let call = call.clone();
-    let (epoch, data) = snapshot(st.clone(), move |st, r| (st.entries[i].read)(r, &call)).await?;
-    Ok(Item {
-        kind: "snapshot",
-        epoch,
-        data: json!({ "epoch": epoch, "data": data }).to_string(),
+    all: bool,
+) -> Result<Vec<Item>, Problem> {
+    let mut call = call.clone();
+    let st = st.clone();
+    tokio::task::spawn_blocking(move || {
+        let snap = st.db.snapshot();
+        let facades = st.db.at(&snap);
+        let epoch = snap.epoch();
+        let mut items = Vec::new();
+        let mut rows = 0;
+        loop {
+            let data = (st.entries[i].read)(&facades, &call)?;
+            rows += data["items"].as_array().map_or(0, Vec::len);
+            let next = data["next"].as_str().map(str::to_owned);
+            items.push(Item {
+                kind: if items.is_empty() {
+                    "snapshot"
+                } else {
+                    "snapshot.more"
+                },
+                epoch,
+                data: json!({ "epoch": epoch, "data": data }).to_string(),
+                partial: true,
+            });
+            match next {
+                Some(after) if all && rows < MAX_SNAPSHOT_ROWS => {
+                    call.query = Some(with_after(call.query.as_deref(), &after)?);
+                }
+                _ => break,
+            }
+        }
+        if let Some(last) = items.last_mut() {
+            last.partial = false;
+        }
+        Ok(items)
     })
+    .await
+    .map_err(|e| Problem::internal(format!("read failed: {e}")))?
+}
+
+/// Take a stream's own `snapshot=all` out of the query its resource
+/// reads.
+fn take_snapshot_all(call: &mut Call) -> Result<bool, Problem> {
+    let mut pairs: Vec<(String, String)> = parse_query(call.query.as_deref())?;
+    let mut all = false;
+    let mut err = None;
+    pairs.retain(|(k, v)| {
+        if k != "snapshot" {
+            return true;
+        }
+        match v.as_str() {
+            "all" => all = true,
+            _ => {
+                err = Some(Problem::bad_request(format!(
+                    "snapshot={v}: the only option is `all`"
+                )))
+            }
+        }
+        false
+    });
+    if let Some(problem) = err {
+        return Err(problem);
+    }
+    call.query = encode_query(&pairs)?;
+    Ok(all)
+}
+
+/// `query` with its `after` cursor replaced by `after`.
+fn with_after(query: Option<&str>, after: &str) -> Result<String, Problem> {
+    let mut pairs: Vec<(String, String)> = parse_query(query)?;
+    pairs.retain(|(k, _)| k != "after");
+    pairs.push(("after".to_owned(), after.to_owned()));
+    Ok(encode_query(&pairs)?.unwrap_or_default())
+}
+
+fn encode_query(pairs: &[(String, String)]) -> Result<Option<String>, Problem> {
+    if pairs.is_empty() {
+        return Ok(None);
+    }
+    serde_urlencoded::to_string(pairs)
+        .map(Some)
+        .map_err(|e| Problem::internal(format!("query: {e}")))
 }
 
 fn change_item(change: &Change) -> Item {
@@ -959,14 +1049,15 @@ fn change_item(change: &Change) -> Item {
         kind: "change",
         epoch: change.epoch,
         data: change.data.clone(),
+        partial: false,
     }
 }
 
 /// Wait, bounded, until the store's frontier reaches the request's
-/// `fold-min-epoch`.
+/// `bog-min-epoch`.
 ///
 /// Wakes on every commit through this server, and polls besides, so
-/// writes through a shared [`Writer`] are seen too.
+/// writes made to a shared [`Db`] directly are seen too.
 async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Result<(), Problem> {
     let Some(raw) = headers.get(MIN_EPOCH_HEADER) else {
         return Ok(());
@@ -979,7 +1070,7 @@ async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Resul
     let deadline = tokio::time::Instant::now() + st.min_epoch_wait;
     let mut commits = st.committed.subscribe();
     loop {
-        let current = st.reader.snapshot().frontier().outer;
+        let current = st.db.snapshot().epoch();
         if current >= wanted {
             return Ok(());
         }
@@ -995,26 +1086,25 @@ async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Resul
     }
 }
 
-/// Run one transaction on the writer thread, under admission control.
+/// Run one transaction off the async workers, under admission control:
+/// bog serializes writers, so the permits bound how many wait.
 async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, Written), Problem> {
     let Ok(permit) = st.permits.clone().try_acquire_owned() else {
-        tracing::warn!(target: "fold_http", "write refused: too many pending");
+        tracing::warn!(target: "bog_http", "write refused: too many pending");
         return Err(Problem::overloaded());
     };
-    let writer = st.writer.clone();
+    let db = st.db.clone();
     let res = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        writer.write(move |tx| {
-            // This transaction commits as the snapshot's outer epoch;
-            // the first frontier that includes it is the next one.
-            let epoch = tx.snap().frontier().outer + 1;
-            apply(tx).map(|written| (epoch, written))
-        })
+        let (written, epoch) = db.write_epoch(apply)?;
+        // A write that changed nothing committed nothing: every
+        // snapshot already reflects it.
+        Ok::<_, bog::Error>((epoch.unwrap_or_else(|| db.snapshot().epoch()), written))
     })
     .await;
     match res {
         Ok(Ok((epoch, written))) => {
-            tracing::debug!(target: "fold_http", epoch, "committed");
+            tracing::debug!(target: "bog_http", epoch, "committed");
             st.committed.send_if_modified(|newest| {
                 let advanced = epoch > *newest;
                 if advanced {
@@ -1025,12 +1115,10 @@ async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, W
             Ok((epoch, written))
         }
         Ok(Err(e)) => {
-            let problem = e.into_problem();
-            tracing::debug!(target: "fold_http", status = problem.status, at = problem.at.as_deref(), "write refused");
+            let problem = Problem::from(e);
+            tracing::debug!(target: "bog_http", status = problem.status, at = problem.at.as_deref(), "write refused");
             Err(problem)
         }
-        // `Writer` panics only when the database thread is gone.
-        Err(e) if e.is_panic() => Err(Problem::unavailable("the database writer has stopped")),
         Err(e) => Err(Problem::internal(format!("write failed: {e}"))),
     }
 }

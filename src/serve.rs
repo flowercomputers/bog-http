@@ -1,9 +1,9 @@
 //! Running a [`Server`]: bind, serve, shut down cleanly.
 //!
-//! For a local app that talks to a fold on the same machine, the usual
+//! For a local app that talks to a bog on the same machine, the usual
 //! shape is spawn-or-connect: read the [discovery file](Server::discovery);
 //! if it names a live server, use it; if not, start one (a second start
-//! on the same store fails cleanly: fold2 holds one writer per store).
+//! on the same store fails cleanly: bog locks the store's directory).
 //! [`idle_exit`](Server::idle_exit) lets that server go away once nothing
 //! has used it for a while.
 
@@ -34,7 +34,7 @@ impl<S: Serve> Server<S> {
     /// While serving, keep a JSON file at `path` saying where:
     /// `{"pid", "url"}` (TCP) or `{"pid", "socket"}` (Unix), plus
     /// `"title"`, `"auth"` (whether a token is required) and the
-    /// fold-http version. Written once listening, atomically; removed on
+    /// bog-http version. Written once listening, atomically; removed on
     /// shutdown. Advisory: a crash leaves it behind, so a client checks
     /// that the server answers before trusting it.
     pub fn discovery(mut self, path: impl Into<PathBuf>) -> Self {
@@ -117,7 +117,7 @@ impl<S: Serve> Server<S> {
         L: axum::serve::Listener,
         L::Addr: std::fmt::Debug,
     {
-        let writer = self.writer.clone();
+        let db = self.db.clone();
         let closer = self.closer();
         let activity = self.activity.clone();
         let idle_exit = self.idle_exit;
@@ -128,12 +128,12 @@ impl<S: Serve> Server<S> {
         if let Some(path) = &discovery {
             write_atomically(path, &advert)?;
         }
-        tracing::info!(target: "fold_http", endpoint = %advert["url"].as_str().or(advert["socket"].as_str()).unwrap_or("?"), "serving");
+        tracing::info!(target: "bog_http", endpoint = %advert["url"].as_str().or(advert["socket"].as_str()).unwrap_or("?"), "serving");
 
         let shutdown = async move {
             tokio::select! {
-                _ = stop_signal() => tracing::info!(target: "fold_http", "stop signal: shutting down"),
-                _ = idle(activity, idle_exit) => tracing::info!(target: "fold_http", "idle: shutting down"),
+                _ = stop_signal() => tracing::info!(target: "bog_http", "stop signal: shutting down"),
+                _ = idle(activity, idle_exit) => tracing::info!(target: "bog_http", "idle: shutting down"),
             }
             closer.close();
         };
@@ -145,9 +145,11 @@ impl<S: Serve> Server<S> {
             remove_if_ours(path);
         }
         served?;
-        tokio::task::spawn_blocking(move || writer.checkpoint())
+        tokio::task::spawn_blocking(move || db.checkpoint())
             .await
             .map_err(std::io::Error::other)?
+            .map(|_| ())
+            .map_err(std::io::Error::other)
     }
 }
 
@@ -156,7 +158,7 @@ fn advert(endpoint: &Endpoint, title: &str, auth: bool) -> serde_json::Value {
         "pid": std::process::id(),
         "title": title,
         "auth": auth,
-        "fold_http": env!("CARGO_PKG_VERSION"),
+        "bog_http": env!("CARGO_PKG_VERSION"),
     });
     match endpoint {
         Endpoint::Tcp(addr) => v["url"] = json!(format!("http://{addr}")),

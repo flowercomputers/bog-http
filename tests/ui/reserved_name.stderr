@@ -1,4 +1,4 @@
-error: `_`-prefixed names are reserved for fold-http's own routes; rename the field or #[serve(skip)] it
+error: `_`-prefixed names are reserved for bog-http's own routes; rename the field or #[serve(skip)] it
  --> tests/ui/reserved_name.rs:6:5
   |
 6 |     _meta: Table<String, u32>,

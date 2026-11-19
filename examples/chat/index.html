@@ -76,8 +76,8 @@ live.addEventListener("messages.snapshot", (e) => {
 live.addEventListener("messages.change", (e) => {
   const { epoch: at, changes } = JSON.parse(e.data);
   const fresh = [];
-  for (const { key, value, diff } of changes) {
-    if (diff > 0) { messages.set(key, value); fresh.push(key); } else messages.delete(key);
+  for (const { key, op, value } of changes) {
+    if (op === "delete") messages.delete(key); else { messages.set(key, value); fresh.push(key); }
   }
   saw(at); renderLog(fresh);
   if (query) find();
@@ -86,8 +86,8 @@ live.addEventListener("messages.change", (e) => {
 // The counts, live from two views.
 live.addEventListener("total.snapshot", (e) => { const s = JSON.parse(e.data); $("total").textContent = `${s.data ?? 0} messages`; });
 live.addEventListener("total.change", (e) => {
-  const c = JSON.parse(e.data).changes.find((c) => c.diff > 0);
-  if (c) $("total").textContent = `${c.value} messages`;
+  const [c] = JSON.parse(e.data).changes;
+  $("total").textContent = `${c.value ?? 0} messages`;
 });
 const authors = new Map();
 function renderAuthors() {
@@ -99,8 +99,8 @@ live.addEventListener("by_author.snapshot", (e) => {
   renderAuthors();
 });
 live.addEventListener("by_author.change", (e) => {
-  for (const { key, value, diff } of JSON.parse(e.data).changes) {
-    if (diff > 0) authors.set(key, value); else if (authors.get(key) === value) authors.delete(key);
+  for (const { key, op, value } of JSON.parse(e.data).changes) {
+    if (op === "delete") authors.delete(key); else authors.set(key, value);
   }
   renderAuthors();
 });
@@ -109,7 +109,7 @@ live.addEventListener("by_author.change", (e) => {
 let typing;
 async function find() {
   const asked = query;
-  const res = await fetch("/find?q=" + encodeURIComponent(asked), { headers: { "fold-min-epoch": String(epoch) } });
+  const res = await fetch("/find?q=" + encodeURIComponent(asked), { headers: { "bog-min-epoch": String(epoch) } });
   const { epoch: at, data } = await res.json();
   if (asked !== query) return;
   saw(at);

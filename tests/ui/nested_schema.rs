@@ -1,5 +1,5 @@
-use fold::schema::*;
-use fold_http::Serve;
+use bog::schema::*;
+use bog_http::Serve;
 
 #[derive(Schema)]
 struct Inner {
@@ -7,8 +7,7 @@ struct Inner {
 }
 
 impl Declare for Inner {
-    type Error = Rejected;
-    fn declare(_: &mut InnerBuilder<Rejected>) {}
+    fn declare(_: &mut InnerBuilder) {}
 }
 
 #[derive(Schema, Serve)]
@@ -18,8 +17,7 @@ struct Outer {
 }
 
 impl Declare for Outer {
-    type Error = Rejected;
-    fn declare(_: &mut OuterBuilder<Rejected>) {}
+    fn declare(_: &mut OuterBuilder) {}
 }
 
 fn main() {}

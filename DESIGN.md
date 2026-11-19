@@ -1,4 +1,7 @@
-# fold-http — design draft
+# bog-http — design draft
+
+Renamed from fold-http on 2026-11-19 (see the last "Progress" entry). Everything before that
+entry keeps the names of its time: fold-http, `fold-epoch`, fold2, fold3.
 
 Status: milestones 1–5 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
@@ -379,3 +382,80 @@ Not done, and why:
   application's choice of exporter.
 - HTTP/2: browsers only use it with TLS. Until then a page should follow
   everything through one `/_live` stream (six connections per host).
+
+### fold3 port (2026-11-12, branch `fold3`)
+
+Builds against `../fold3` on its `fold-http` branch instead of fold2.
+The route surface is unchanged; what moved:
+
+- No writer thread: the server holds an `Arc<Db<S>>` (`Server::new`
+  takes a `Db` or an `Arc<Db>`; `from_parts` is gone). Reads and writes
+  run on the blocking pool, and fold3 serializes writers.
+- One error type. `Declare::Error` and `IntoProblem` are gone;
+  `From<fold3::Error> for Problem` maps a `Rejected` to `422` with `at`,
+  a `Problem` carried by `Error::reject` to itself (how a custom route
+  picks a status), any other refusal to `422`, and store failures to
+  `503`.
+- Facades borrow their snapshot: `Resource::Facade<'a>` is a GAT, and
+  the derive emits accessor `fn` items taking a `Tie<'a>` marker, since
+  a `fn` pointer can't bind `'a` from `S::Read<'a>` alone.
+- Live changes are fold3's, natively: `{key?, op, value?, old?}` with
+  `op` one of `insert`, `delete`, `replace`; counted kinds (multisets,
+  grouped views) send `{key?, value, diff}`.
+- Epochs are fold3's `u64` as it is: a write reports the epoch it
+  committed as, and a write that changed nothing reports the epoch
+  already there (it commits nothing, so "its" epoch would never come).
+- `Bag` is `Multiset` (kind `multiset`, `MultisetAdd`/`MultisetRemove`);
+  multiplicities and sums are `i64`.
+
+fold3 (`fold-http` branch) gained: serde/schemars for `Id` behind
+features; `Db::write_epoch` (and `commit` returning the epoch);
+`SetRead::range_rev`, `MultisetRead::range`/`range_rev`, and
+`GroupRead::rows`/`rows_rev` for cursors that resume mid-group.
+
+Worth revisiting:
+
+- A hub's replay floor is a snapshot taken after it subscribes: fold3's
+  facade `subscribe()` may miss a commit published between its snapshot
+  and the subscription, so nothing at or below that floor is replayed.
+- `fold3::Error::AfterCommit` (committed, maintenance failed) answers
+  `500` though the write stands.
+- The chat example no longer opens the gallery's fold2 data.
+
+### bog-http (2026-11-19)
+
+fold3 was renamed bog and made public; this crate follows. Only names
+moved:
+
+- Crates: `bog-http` and `bog-http-derive` (`bog_http::…`), building on
+  `bog` (`bog::schema::…`) in place of `fold3`.
+- Wire: the epoch headers are `bog-epoch` and `bog-min-epoch`, and the
+  OpenAPI header component is `BogEpoch`. Routes, bodies and events are
+  as they were.
+- Around it: the `tracing` target and the discovery file's version key
+  are `bog_http`, hub threads are named `bog-http hub N`, and the
+  examples read `BOG_DIR` and default to `./chat.bog` / `./shop.bog`.
+- The dependency is bog's public repo, on its `bog-http` branch: bog
+  with the additions listed under the fold3 port, which `master` does
+  not carry yet.
+
+### Read-only sources, whole-listing snapshots (2026-11-19)
+
+Ported from the other fold3 port (PR #1, "Port to fold3"), which found
+both gaps building a first app, turf:
+
+- `#[serve(read_only)]` on a source serves its reads and drops its write
+  routes from the router, `/_schema`, OpenAPI and `/_tx`, for sources an
+  application writes only through its own transactions. The derive
+  rejects it on views and alongside `skip`.
+- `snapshot=all` in a stream's query (on `/_live`, inside a resource's
+  own query) makes its snapshot the whole listing: every page read from
+  one snapshot, the first as `snapshot` and the rest as `snapshot.more`,
+  up to `MAX_SNAPSHOT_ROWS`. Pages before the last carry the id `-`, not
+  an epoch, so a reconnect mid-snapshot starts over rather than resuming
+  from a state the client never finished receiving. It's opt-in: a
+  stream asking for `limit=15` wants fifteen rows.
+
+That port's third addition, an `Option<Id<_>>` helper, isn't needed
+here: bog's `Id` has serde and schemars impls, so `Option<Id<_>>` is
+covered by theirs.

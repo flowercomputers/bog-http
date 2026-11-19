@@ -86,7 +86,7 @@ pub(crate) fn document(
                 "NotFound": problem("Nothing at this key, or no such route."),
                 "UnsupportedMediaType": problem("The body isn't `application/json`."),
                 "Rejected": problem("A schema constraint refused the write; `at` names the source or view that refused. Nothing was applied."),
-                "Unavailable": problem("Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."),
+                "Unavailable": problem("Try again later (`Retry-After`): too many pending writes (`overloaded`), a `bog-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."),
                 "PayloadTooLarge": problem("The body exceeds the server's limit."),
                 "NotAcceptable": problem("A stream was asked of a route that doesn't stream."),
             },
@@ -100,7 +100,7 @@ pub(crate) fn document(
                 },
             },
             "headers": {
-                "FoldEpoch": {
+                "BogEpoch": {
                     "description": "The epoch of the snapshot read, or the first epoch that includes the write.",
                     "schema": { "type": "integer", "format": "uint64", "minimum": 0 },
                 },
@@ -178,7 +178,7 @@ fn operation(id: &str, tag: &str, description: Option<&str>, r: &Route) -> Value
         ok["content"]["text/event-stream"] = json!({
             "schema": {
                 "type": "string",
-                "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
             },
         });
         if let Some(Value::Array(params)) = op.get_mut("parameters") {
@@ -307,7 +307,7 @@ fn transaction(resources: &[Describe]) -> Value {
 fn success(data: &Value) -> Value {
     json!({
         "description": "Success.",
-        "headers": { EPOCH_HEADER: { "$ref": "#/components/headers/FoldEpoch" } },
+        "headers": { EPOCH_HEADER: { "$ref": "#/components/headers/BogEpoch" } },
         "content": {
             "application/json": {
                 "schema": {

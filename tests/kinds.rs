@@ -1,4 +1,4 @@
-//! Every fold kind, served: sets, cells, bags, ordered, grouped, value,
+//! Every bog kind, served: sets, cells, multisets, ordered, grouped, value,
 //! and search views.
 
 mod common;
@@ -120,7 +120,7 @@ async fn cells_set_and_clear() {
 }
 
 #[tokio::test]
-async fn bags_count_copies() {
+async fn multisets_count_copies() {
     let app = app();
     let res = send(
         &app,
@@ -161,6 +161,13 @@ async fn bags_count_copies() {
         vec![
             json!({"value": "cd", "count": 1}),
             json!({"value": "lp", "count": 2})
+        ]
+    );
+    assert_eq!(
+        walk(&app, "/stock?limit=1&order=desc").await,
+        vec![
+            json!({"value": "lp", "count": 2}),
+            json!({"value": "cd", "count": 1})
         ]
     );
     for bad in [
@@ -226,6 +233,9 @@ async fn group_views_list_pairs_and_per_key_values() {
     assert_eq!(all.len(), 5);
     assert_eq!(all[0], json!({"key": 1, "value": "q", "count": 1}));
     assert_eq!(all[4], json!({"key": 3, "value": "xyz", "count": 1}));
+    let mut back = walk(&app, "/tags_by_len?limit=2&order=desc").await;
+    back.reverse();
+    assert_eq!(back, all);
 
     let values = |rows: Vec<Value>| -> Vec<String> {
         rows.iter()

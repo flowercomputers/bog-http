@@ -4,8 +4,8 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use bog_http::{NoParams, Problem};
 use common::{send, server};
-use fold_http::{NoParams, Problem};
 use serde_json::json;
 
 const WRITERS: u64 = 8;
@@ -17,12 +17,21 @@ async fn snapshots_never_tear_under_concurrent_writes() {
         .get(
             "/invariant",
             "Views agree with their sources",
-            |r: &common::ShopRead, _: NoParams| {
-                let spend: isize = r.spend.iter().map(|(_, c)| c).sum();
-                let paid: isize = r.orders.iter().map(|(_, o)| o.cents).sum();
-                let count = r.orders.iter().count() as isize;
-                let ranked: isize = r.ranked.iter().map(|(_, c)| c).sum();
-                if spend != paid || ranked != paid || r.order_count.get().unwrap_or(0) != count {
+            |r: &common::ShopRead<'_>, _: NoParams| {
+                let mut spend = 0;
+                for row in r.spend.iter() {
+                    spend += row?.1;
+                }
+                let (mut paid, mut count) = (0, 0);
+                for row in r.orders.iter() {
+                    paid += row?.1.cents;
+                    count += 1;
+                }
+                let mut ranked = 0;
+                for row in r.ranked.iter() {
+                    ranked += row?.1;
+                }
+                if spend != paid || ranked != paid || r.order_count.get()?.unwrap_or(0) != count {
                     return Err(Problem::internal(format!(
                         "torn: spend {spend} ranked {ranked} paid {paid} count {count}"
                     )));

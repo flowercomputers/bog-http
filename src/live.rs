@@ -1,8 +1,8 @@
-//! Live feeds: one hub per streamed resource, fanning its fold
+//! Live feeds: one hub per streamed resource, fanning its bog
 //! subscription out to every client.
 //!
 //! A hub starts with its first client and stops with its last. Its
-//! thread drains the subscription (fold's channel is unbounded, so
+//! thread drains the subscription (bog's channel is unbounded, so
 //! something must) and broadcasts each commit's changes once, already
 //! serialized, over a bounded channel. A client that falls behind that
 //! channel isn't buffered without bound: it gets a fresh snapshot.
@@ -90,11 +90,11 @@ impl Hubs {
                 });
                 let (hubs_, hub_) = (self.clone(), hub.clone());
                 std::thread::Builder::new()
-                    .name(format!("fold-http hub {i}"))
+                    .name(format!("bog-http hub {i}"))
                     .spawn(move || run(hubs_, i, hub_, live))
                     .expect("spawn a hub thread");
                 hubs.insert(i, hub.clone());
-                tracing::debug!(target: "fold_http", resource = i, since, "hub started");
+                tracing::debug!(target: "bog_http", resource = i, since, "hub started");
                 hub
             }
         };
@@ -125,11 +125,7 @@ impl Hubs {
 fn run(hubs: Arc<Hubs>, i: usize, hub: Arc<Hub>, mut live: Live) {
     loop {
         match live.poll(IDLE_CHECK) {
-            Ok(Some((outer, changes))) => {
-                // The commit's outer epoch; the first frontier that
-                // includes it, which is what responses call its epoch, is
-                // the next one.
-                let epoch = outer + 1;
+            Ok(Some((epoch, changes))) => {
                 let data = json!({ "epoch": epoch, "changes": changes }).to_string();
                 let change = Arc::new(Change { epoch, data });
                 let mut ring = hub.ring.lock().unwrap();
@@ -162,14 +158,14 @@ fn stop(hubs: &Hubs, i: usize, hub: &Arc<Hub>, always: bool) -> bool {
     }
     if map.get(&i).is_some_and(|h| Arc::ptr_eq(h, hub)) {
         map.remove(&i);
-        tracing::debug!(target: "fold_http", resource = i, "hub stopped");
+        tracing::debug!(target: "bog_http", resource = i, "hub stopped");
     }
     true
 }
 
 #[cfg(test)]
 mod tests {
-    use fold::schema::*;
+    use bog::schema::*;
 
     use super::*;
 
@@ -179,24 +175,20 @@ mod tests {
     }
 
     impl Declare for Kv {
-        type Error = Rejected;
-        fn declare(_: &mut KvBuilder<Rejected>) {}
+        fn declare(_: &mut KvBuilder) {}
     }
 
-    fn feed(db: &fold::Db<Kv>) -> impl FnOnce() -> Option<(u64, Live)> {
+    fn feed(db: &Db<Kv>) -> impl FnOnce() -> Option<(u64, Live)> {
         let snap = db.snapshot();
         let read = db.at(&snap);
-        move || {
-            Some((
-                snap.frontier().outer,
-                Live::new(read.rows.subscribe(), |(k, v), d| json!([k, v, d])),
-            ))
-        }
+        let live = Live::new(read.rows.subscribe(), |(k, c)| json!([k, c.after()]));
+        let since = snap.epoch();
+        move || Some((since, live))
     }
 
     #[test]
     fn one_hub_per_resource_until_its_last_client_leaves() {
-        let mut db = Kv::memory().build().unwrap();
+        let db = Kv::memory().build().unwrap();
         let hubs = Arc::new(Hubs::default());
         let a = hubs.join(0, None, feed(&db)).unwrap();
         let b = hubs
@@ -207,7 +199,7 @@ mod tests {
         db.write(|tx| tx.rows.upsert(1, 10)).unwrap();
         let mut a = a.rx;
         let got = a.blocking_recv().unwrap();
-        assert_eq!(got.data, r#"{"changes":[[1,10,1]],"epoch":1}"#);
+        assert_eq!(got.data, r#"{"changes":[[1,10]],"epoch":1}"#);
         assert_eq!(
             b.rx.len(),
             1,

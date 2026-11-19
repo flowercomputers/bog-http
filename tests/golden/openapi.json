@@ -1,7 +1,7 @@
 {
   "components": {
     "headers": {
-      "FoldEpoch": {
+      "BogEpoch": {
         "description": "The epoch of the snapshot read, or the first epoch that includes the write.",
         "schema": {
           "format": "uint64",
@@ -14,7 +14,7 @@
       "MinEpoch": {
         "description": "Answer from a snapshot at or after this epoch, waiting briefly for it: read your own writes by passing the epoch a write returned.",
         "in": "header",
-        "name": "fold-min-epoch",
+        "name": "bog-min-epoch",
         "required": false,
         "schema": {
           "format": "uint64",
@@ -82,7 +82,7 @@
             }
           }
         },
-        "description": "Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."
+        "description": "Try again later (`Retry-After`): too many pending writes (`overloaded`), a `bog-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."
       },
       "UnsupportedMediaType": {
         "content": {
@@ -96,27 +96,6 @@
       }
     },
     "schemas": {
-      "BagAdd_string": {
-        "additionalProperties": false,
-        "description": "`POST /n`: add copies of a value.",
-        "properties": {
-          "times": {
-            "description": "How many copies to add; 1 by default.",
-            "format": "int",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "type": "object"
-      },
       "Completion": {
         "description": "One completion: a term and how many documents contain it.",
         "properties": {
@@ -139,7 +118,7 @@
         "description": "A value with its multiplicity.",
         "properties": {
           "count": {
-            "format": "int",
+            "format": "int64",
             "type": "integer"
           },
           "value": {
@@ -167,15 +146,15 @@
         ],
         "type": "object"
       },
-      "GroupRow_uint_string": {
+      "GroupRow_uint64_string": {
         "description": "One value of a key in a grouped view, with its multiplicity.",
         "properties": {
           "count": {
-            "format": "int",
+            "format": "int64",
             "type": "integer"
           },
           "key": {
-            "format": "uint",
+            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -236,10 +215,31 @@
         ],
         "type": "object"
       },
+      "MultisetAdd_string": {
+        "additionalProperties": false,
+        "description": "`POST /n`: add copies of a value.",
+        "properties": {
+          "times": {
+            "description": "How many copies to add; 1 by default.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "Order": {
         "properties": {
           "cents": {
-            "format": "int",
+            "format": "int64",
             "type": "integer"
           },
           "customer": {
@@ -275,12 +275,12 @@
         ],
         "type": "object"
       },
-      "Page_GroupRow_uint_string": {
+      "Page_GroupRow_uint64_string": {
         "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/GroupRow_uint_string"
+              "$ref": "#/components/schemas/GroupRow_uint64_string"
             },
             "type": "array"
           },
@@ -338,12 +338,12 @@
         ],
         "type": "object"
       },
-      "Page_Row_Id_int": {
+      "Page_Row_Id_int64": {
         "description": "A page of a listing. `next` is the cursor for the following page,\nabsent on the last.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Row_Id_int"
+              "$ref": "#/components/schemas/Row_Id_int64"
             },
             "type": "array"
           },
@@ -496,7 +496,7 @@
         ],
         "type": "object"
       },
-      "Row_Id_int": {
+      "Row_Id_int64": {
         "description": "A keyed row.",
         "properties": {
           "key": {
@@ -505,7 +505,7 @@
             "type": "integer"
           },
           "value": {
-            "format": "int",
+            "format": "int64",
             "type": "integer"
           }
         },
@@ -856,7 +856,7 @@
                       "description": "Add copies of a value",
                       "properties": {
                         "body": {
-                          "$ref": "#/components/schemas/BagAdd_string"
+                          "$ref": "#/components/schemas/MultisetAdd_string"
                         },
                         "op": {
                           "const": "add"
@@ -889,7 +889,7 @@
                           "properties": {
                             "times": {
                               "description": "How many copies to remove, at most as many as there are; 1 by\ndefault.",
-                              "format": "int",
+                              "format": "int64",
                               "type": [
                                 "integer",
                                 "null"
@@ -954,8 +954,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1058,15 +1058,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1122,8 +1122,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1190,8 +1190,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1253,8 +1253,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1326,8 +1326,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1355,8 +1355,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1410,8 +1410,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1475,15 +1475,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1539,8 +1539,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1568,8 +1568,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1652,8 +1652,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1730,8 +1730,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1798,7 +1798,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "format": "int",
+                      "format": "int64",
                       "type": [
                         "integer",
                         "null"
@@ -1819,15 +1819,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1924,15 +1924,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1988,8 +1988,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2059,8 +2059,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2160,15 +2160,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2227,8 +2227,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2290,8 +2290,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2363,8 +2363,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2392,8 +2392,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2511,7 +2511,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/Page_Row_Id_int"
+                      "$ref": "#/components/schemas/Page_Row_Id_int64"
                     },
                     "epoch": {
                       "format": "uint64",
@@ -2528,15 +2528,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2583,7 +2583,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "format": "int",
+                      "format": "int64",
                       "type": "integer"
                     },
                     "epoch": {
@@ -2602,8 +2602,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2687,7 +2687,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/Page_Row_Id_int"
+                      "$ref": "#/components/schemas/Page_Row_Id_int64"
                     },
                     "epoch": {
                       "format": "uint64",
@@ -2704,15 +2704,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2759,7 +2759,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "format": "int",
+                      "format": "int64",
                       "type": "integer"
                     },
                     "epoch": {
@@ -2778,8 +2778,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2879,15 +2879,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2912,7 +2912,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BagAdd_string"
+                "$ref": "#/components/schemas/MultisetAdd_string"
               }
             }
           },
@@ -2943,8 +2943,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2989,7 +2989,7 @@
             "name": "times",
             "required": false,
             "schema": {
-              "format": "int",
+              "format": "int64",
               "type": "integer"
             }
           }
@@ -3019,8 +3019,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3062,7 +3062,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "format": "int",
+                      "format": "int64",
                       "type": "integer"
                     },
                     "epoch": {
@@ -3081,8 +3081,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3180,15 +3180,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3248,8 +3248,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3310,8 +3310,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3372,8 +3372,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3401,8 +3401,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3482,7 +3482,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/Page_GroupRow_uint_string"
+                      "$ref": "#/components/schemas/Page_GroupRow_uint64_string"
                     },
                     "epoch": {
                       "format": "uint64",
@@ -3499,15 +3499,15 @@
               },
               "text/event-stream": {
                 "schema": {
-                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [{key?, value, diff}]}` (`diff` > 0 arrives, < 0 retracts; an upsert is both). Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume.",
+                  "description": "With `Accept: text/event-stream`: a `snapshot` event whose data is the JSON body above, then one `change` event per commit touching this resource, data `{epoch, changes: [...]}`. A change is `{key?, op, value?, old?}`: `insert` carries the new `value`, `delete` the `old` one, `replace` both (a set's member is its `value`). Where values are counted (multisets, grouped views) it is `{key?, value, diff}`, the change in count. Every event's `id` is its epoch: reconnect with `Last-Event-ID` to resume. Add `snapshot=all` to the query to receive a listing whole: its first page as `snapshot`, every further page as `snapshot.more` (ids `-` until the last), all at one epoch.",
                   "type": "string"
                 }
               }
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3537,7 +3537,7 @@
             "name": "key",
             "required": true,
             "schema": {
-              "format": "uint",
+              "format": "uint64",
               "minimum": 0,
               "type": "integer"
             }
@@ -3605,8 +3605,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
