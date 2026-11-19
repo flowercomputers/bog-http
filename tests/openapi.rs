@@ -4,8 +4,8 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{Shop, send};
 use bog_http::Server;
+use common::{Shop, send};
 use serde_json::Value;
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/openapi.json");

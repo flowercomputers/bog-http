@@ -4,8 +4,8 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{send, server};
 use bog_http::{NoParams, Problem};
+use common::{send, server};
 use serde_json::json;
 
 const WRITERS: u64 = 8;

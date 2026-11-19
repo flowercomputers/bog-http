@@ -11,8 +11,8 @@
 //!
 //! Data lives in `./shop.bog` (override with `BOG_DIR`).
 
-use bog_http::{Serve, Server};
 use bog::schema::*;
+use bog_http::{Serve, Server};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
