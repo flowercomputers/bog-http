@@ -1,4 +1,4 @@
-//! Every fold kind, served: sets, cells, multisets, ordered, grouped, value,
+//! Every bog kind, served: sets, cells, multisets, ordered, grouped, value,
 //! and search views.
 
 mod common;

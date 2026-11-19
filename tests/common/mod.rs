@@ -5,8 +5,8 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use fold_http::Serve;
-use fold3::schema::*;
+use bog_http::Serve;
+use bog::schema::*;
 use http_body_util::BodyExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -72,8 +72,8 @@ impl Declare for Shop {
     }
 }
 
-pub fn server() -> fold_http::Server<Shop> {
-    fold_http::Server::new(Shop::memory().build().unwrap())
+pub fn server() -> bog_http::Server<Shop> {
+    bog_http::Server::new(Shop::memory().build().unwrap())
 }
 
 pub fn app() -> Router {

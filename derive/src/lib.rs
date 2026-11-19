@@ -1,4 +1,4 @@
-//! `#[derive(Serve)]`: serve a fold schema's fields over HTTP.
+//! `#[derive(Serve)]`: serve a bog schema's fields over HTTP.
 //!
 //! Sits beside `#[derive(Schema)]` on the same struct and, like it,
 //! never inspects field types: each field becomes an `Entry` built from
@@ -46,8 +46,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         ));
     }
 
-    let p = quote!(::fold_http::__private);
-    let sch = quote!(#p::fold3::schema);
+    let p = quote!(::bog_http::__private);
+    let sch = quote!(#p::bog::schema);
     let mut entries = Vec::new();
     for f in &fields.named {
         let ident = f.ident.as_ref().expect("named field");
@@ -59,7 +59,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         if is("schema") {
             return Err(syn::Error::new_spanned(
                 ident,
-                "fold-http doesn't serve nested schemas yet; mark the field #[serve(skip)]",
+                "bog-http doesn't serve nested schemas yet; mark the field #[serve(skip)]",
             ));
         }
         let field_name = ident.to_string();
@@ -67,7 +67,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         if field_name.starts_with('_') {
             return Err(syn::Error::new_spanned(
                 ident,
-                "`_`-prefixed names are reserved for fold-http's own routes; rename the field or #[serve(skip)] it",
+                "`_`-prefixed names are reserved for bog-http's own routes; rename the field or #[serve(skip)] it",
             ));
         }
         let doc = doc_comment(f);
@@ -81,25 +81,25 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
         let facade = quote_spanned! {ty.span()=> {
             fn facade<'r, 'a>(
                 r: &'r <#name as #sch::Schema>::Read<'a>,
-                _: ::fold_http::Tie<'a>,
-            ) -> &'r <#ty as ::fold_http::Resource>::Facade<'a> {
+                _: ::bog_http::Tie<'a>,
+            ) -> &'r <#ty as ::bog_http::Resource>::Facade<'a> {
                 &r.#ident
             }
             facade
         }};
         entries.push(if is("view") {
             quote_spanned! {ty.span()=>
-                ::fold_http::Entry::<Self>::view::<#ty>(#field_name, #facade) #describe
+                ::bog_http::Entry::<Self>::view::<#ty>(#field_name, #facade) #describe
             }
         } else {
             quote_spanned! {ty.span()=>
-                ::fold_http::Entry::<Self>::source::<#ty>(
+                ::bog_http::Entry::<Self>::source::<#ty>(
                     #field_name,
                     #facade,
                     {
                         fn write<'r, 'a>(
                             w: &'r <#name as #sch::Schema>::Write<'a>,
-                            _: ::fold_http::Tie<'a>,
+                            _: ::bog_http::Tie<'a>,
                         ) -> &'r <#ty as #sch::SourceDecl>::Write<'a> {
                             &w.#ident
                         }
@@ -112,8 +112,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     }
 
     Ok(quote! {
-        impl ::fold_http::Serve for #name {
-            fn entries() -> ::std::vec::Vec<::fold_http::Entry<Self>> {
+        impl ::bog_http::Serve for #name {
+            fn entries() -> ::std::vec::Vec<::bog_http::Entry<Self>> {
                 #[allow(unused_imports)]
                 use #p::{MintById as _, MintNone as _};
                 ::std::vec![#(#entries),*]

@@ -5,7 +5,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{send, server};
-use fold_http::{NoParams, Problem};
+use bog_http::{NoParams, Problem};
 use serde_json::json;
 
 const WRITERS: u64 = 8;

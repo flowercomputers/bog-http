@@ -2,7 +2,7 @@
 // Erased write closures are spelled out once, in `resource`.
 #![allow(clippy::type_complexity)]
 
-//! fold-http: serve any [fold] schema over HTTP.
+//! bog-http: serve any [bog] schema over HTTP.
 //!
 //! Derive [`Serve`] next to `Schema`, and every source and view becomes a
 //! typed resource: tables and events are writable, views are read-only,
@@ -18,7 +18,7 @@
 //! }
 //!
 //! let db = Shop::open("./shop").build()?;
-//! let app: axum::Router = fold_http::Server::new(db).into_router();
+//! let app: axum::Router = bog_http::Server::new(db).into_router();
 //! ```
 //!
 //! # Routes
@@ -42,13 +42,13 @@
 //! Meta routes: `GET /openapi.json` (OpenAPI 3.1), `GET /_schema` (the
 //! same descriptions, compact), `GET /_health`.
 //!
-//! Successes are `{"epoch", "data"}` with a `fold-epoch` header; errors
+//! Successes are `{"epoch", "data"}` with a `bog-epoch` header; errors
 //! are RFC 9457 `application/problem+json` (see [`Problem`]). Keys in
 //! paths parse as JSON, falling back to a bare string (see
 //! [`wire::parse_key`]).
 //!
 //! # Writes
-//! Every write is one fold transaction, decoded on the request's thread
+//! Every write is one bog transaction, decoded on the request's thread
 //! and applied on the blocking pool; a malformed request never opens a
 //! transaction, and a refusal rolls everything back (`422`, naming the
 //! refusing source or view in `at`).
@@ -60,7 +60,7 @@
 //!   a read over one snapshot, or a transaction. Both are documented in
 //!   OpenAPI from their types.
 //! - Writes return the epoch they committed as. Send it back as
-//!   `fold-min-epoch` on a read to read your own writes; the read waits
+//!   `bog-min-epoch` on a read to read your own writes; the read waits
 //!   (bounded by [`Server::min_epoch_wait`]) until that epoch is visible.
 //! - [`Server::max_pending_writes`] bounds the writes waiting: past it,
 //!   writes get `503 overloaded` with `Retry-After` instead of piling up.
@@ -75,7 +75,7 @@
 //! (multisets, grouped views) send `{key?, value, diff}`, the change in
 //! count. Each event's `id` is its epoch, so a reconnect resumes
 //! from `Last-Event-ID` (replayed, or a fresh snapshot when too old). One
-//! hub per resource drains fold's subscription; a client that falls
+//! hub per resource drains bog's subscription; a client that falls
 //! behind gets a fresh snapshot instead of an unbounded backlog.
 //!
 //! A page following several resources should use `GET /_live`, which
@@ -92,7 +92,7 @@
 //! - [`Server::discovery`] keeps a JSON file saying where the server is
 //!   (`url` or `socket`, `pid`), so an app can connect to a running one
 //!   or start its own; a second server on the same store fails cleanly
-//!   (fold3 locks the store's directory).
+//!   (bog locks the store's directory).
 //! - [`Server::idle_exit`] lets an on-demand server leave once unused.
 //! - A loopback bind answers only to `localhost` names (DNS rebinding);
 //!   [`Server::bearer_token`] keeps out other local processes and pages,
@@ -101,11 +101,11 @@
 //!
 //! `GET /_health` reports the epoch, open streams, and pending writes.
 //! Events go to [`tracing`](https://docs.rs/tracing) under the
-//! `fold_http` target. For anything else, [`Server::into_router`] is a
+//! `bog_http` target. For anything else, [`Server::into_router`] is a
 //! plain axum [`Router`](axum::Router).
 //!
 //! # Serving your own kinds
-//! A source or view type from outside fold serves by implementing
+//! A source or view type from outside bog serves by implementing
 //! [`Resource`] (and [`SourceResource`] if writable): describe its
 //! [`Route`]s, answer reads from its facade, stage writes for the
 //! transaction. The derive needs nothing more.
@@ -138,7 +138,7 @@ pub use server::{Closer, MAX_LIVE, MIN_EPOCH_HEADER, Server};
 
 /// A CORS layer for a browser app on another origin (a dev server, a
 /// desktop shell): these origins only, with the methods and headers the
-/// API uses, exposing `fold-epoch`, `Location`, and `Retry-After`.
+/// API uses, exposing `bog-epoch`, `Location`, and `Retry-After`.
 ///
 /// There is deliberately no "any origin": a server on `localhost` that
 /// any web page may call is one any site you visit can read and write.
@@ -170,14 +170,14 @@ pub fn cors<'a>(origins: impl IntoIterator<Item = &'a str>) -> tower_http::cors:
 pub use tx::MAX_TX_OPS;
 
 #[cfg(feature = "derive")]
-pub use fold_http_derive::Serve;
+pub use bog_http_derive::Serve;
 
 /// A schema servable over HTTP: the list of its served fields.
 ///
 /// Derive it with `#[derive(Serve)]` beside `#[derive(Schema)]`; skip a
 /// field with `#[serve(skip)]`. A hand-written impl builds [`Entry`]s
 /// directly.
-pub trait Serve: fold3::schema::Declare {
+pub trait Serve: bog::schema::Declare {
     fn entries() -> Vec<Entry<Self>>;
 }
 
@@ -186,11 +186,11 @@ pub trait Serve: fold3::schema::Declare {
 pub mod __private {
     use std::marker::PhantomData;
 
-    use fold3::schema::{Data, Id, SourceDecl, Table};
+    use bog::schema::{Data, Id, SourceDecl, Table};
 
     use crate::{Mint, Wire};
 
-    pub use fold3;
+    pub use bog;
 
     /// Autoref specialization: `(&&Probe::<D>::NEW).mint()` finds
     /// [`MintById`] when `D` is `Table<Id<V>, V>` and [`MintNone`]

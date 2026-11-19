@@ -320,7 +320,7 @@ async fn a_client_that_falls_behind_gets_a_fresh_snapshot() {
     let mut s = Stream::open(&app, "/prefs?limit=1", None).await.unwrap();
     assert_eq!(s.next().await.event, "snapshot");
     // Far more commits than the hub buffers, while this client reads none.
-    let n = fold_http_ring() + 100;
+    let n = bog_http_ring() + 100;
     for i in 0..n {
         send(
             &app,
@@ -347,7 +347,7 @@ async fn a_client_that_falls_behind_gets_a_fresh_snapshot() {
     assert!(resynced, "lagging past the buffer resyncs with a snapshot");
 }
 
-fn fold_http_ring() -> usize {
+fn bog_http_ring() -> usize {
     1024
 }
 
@@ -406,7 +406,7 @@ async fn closing_the_server_ends_its_streams() {
 #[cfg(feature = "cors")]
 #[tokio::test]
 async fn cors_admits_only_the_listed_origins() {
-    let app = app().layer(fold_http::cors(["http://localhost:5173"]));
+    let app = app().layer(bog_http::cors(["http://localhost:5173"]));
     let preflight = |origin: &'static str| {
         Request::builder()
             .method(Method::OPTIONS)
@@ -415,7 +415,7 @@ async fn cors_admits_only_the_listed_origins() {
             .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PUT")
             .header(
                 header::ACCESS_CONTROL_REQUEST_HEADERS,
-                "content-type,fold-min-epoch",
+                "content-type,bog-min-epoch",
             )
             .body(Body::empty())
             .unwrap()
@@ -449,7 +449,7 @@ async fn cors_admits_only_the_listed_origins() {
         .to_str()
         .unwrap()
         .to_owned();
-    assert!(exposed.contains("fold-epoch"), "{exposed}");
+    assert!(exposed.contains("bog-epoch"), "{exposed}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

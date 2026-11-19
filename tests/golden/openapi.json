@@ -1,7 +1,7 @@
 {
   "components": {
     "headers": {
-      "FoldEpoch": {
+      "BogEpoch": {
         "description": "The epoch of the snapshot read, or the first epoch that includes the write.",
         "schema": {
           "format": "uint64",
@@ -14,7 +14,7 @@
       "MinEpoch": {
         "description": "Answer from a snapshot at or after this epoch, waiting briefly for it: read your own writes by passing the epoch a write returned.",
         "in": "header",
-        "name": "fold-min-epoch",
+        "name": "bog-min-epoch",
         "required": false,
         "schema": {
           "format": "uint64",
@@ -82,7 +82,7 @@
             }
           }
         },
-        "description": "Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."
+        "description": "Try again later (`Retry-After`): too many pending writes (`overloaded`), a `bog-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."
       },
       "UnsupportedMediaType": {
         "content": {
@@ -954,8 +954,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1065,8 +1065,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1122,8 +1122,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1190,8 +1190,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1253,8 +1253,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1326,8 +1326,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1355,8 +1355,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1410,8 +1410,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1482,8 +1482,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1539,8 +1539,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1568,8 +1568,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1652,8 +1652,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1730,8 +1730,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1826,8 +1826,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1931,8 +1931,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -1988,8 +1988,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2059,8 +2059,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2167,8 +2167,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2227,8 +2227,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2290,8 +2290,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2363,8 +2363,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2392,8 +2392,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2535,8 +2535,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2602,8 +2602,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2711,8 +2711,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2778,8 +2778,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2886,8 +2886,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -2943,8 +2943,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3019,8 +3019,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3081,8 +3081,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3187,8 +3187,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3248,8 +3248,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3310,8 +3310,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3372,8 +3372,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3401,8 +3401,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3506,8 +3506,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },
@@ -3605,8 +3605,8 @@
             },
             "description": "Success.",
             "headers": {
-              "fold-epoch": {
-                "$ref": "#/components/headers/FoldEpoch"
+              "bog-epoch": {
+                "$ref": "#/components/headers/BogEpoch"
               }
             }
           },

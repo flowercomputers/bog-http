@@ -80,6 +80,61 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "bog"
+version = "0.1.0"
+source = "git+https://github.com/flowercomputers/bog?branch=bog-http#55d151afebd45717495ca21c8c64589018fc55b0"
+dependencies = [
+ "arc-swap",
+ "bog-derive",
+ "bytes",
+ "crc32fast",
+ "schemars",
+ "serde",
+ "smallvec",
+]
+
+[[package]]
+name = "bog-derive"
+version = "0.1.0"
+source = "git+https://github.com/flowercomputers/bog?branch=bog-http#55d151afebd45717495ca21c8c64589018fc55b0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "bog-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "bog",
+ "bog-http-derive",
+ "futures-util",
+ "http-body-util",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "trybuild",
+]
+
+[[package]]
+name = "bog-http-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,59 +182,6 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
-
-[[package]]
-name = "fold-http"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "fold-http-derive",
- "fold3",
- "futures-util",
- "http-body-util",
- "schemars",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "tempfile",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "trybuild",
-]
-
-[[package]]
-name = "fold-http-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "fold3"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "bytes",
- "crc32fast",
- "fold3-derive",
- "schemars",
- "serde",
- "smallvec",
-]
-
-[[package]]
-name = "fold3-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "form_urlencoded"

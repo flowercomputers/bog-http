@@ -1,4 +1,4 @@
-//! [`Resource`]: how one schema field is served. Implemented on fold's
+//! [`Resource`]: how one schema field is served. Implemented on bog's
 //! declaration types (`Table<K, V>`, `MapView<K, V>`, …), so the derive
 //! never inspects a field's type — it asks the type.
 //!
@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use fold3::schema::{Closed, Schema, SourceDecl, Subscription};
+use bog::schema::{Closed, Schema, SourceDecl, Subscription};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -185,7 +185,7 @@ impl Route {
 #[derive(Debug, Clone, Serialize)]
 pub struct Describe {
     pub name: String,
-    /// The fold kind, `snake_case` (`table`, `events`, `map_view`, …).
+    /// The bog kind, `snake_case` (`table`, `events`, `map_view`, …).
     /// An open set: third-party kinds name themselves.
     pub kind: &'static str,
     /// The field's doc comment.
@@ -299,15 +299,15 @@ impl Written {
 /// A typed write on source `D`'s write facade, decoded on the request's
 /// thread and applied inside the transaction.
 pub type Apply<D> =
-    Box<dyn for<'a> FnOnce(&<D as SourceDecl>::Write<'a>) -> fold3::Result<Written> + Send>;
+    Box<dyn for<'a> FnOnce(&<D as SourceDecl>::Write<'a>) -> bog::Result<Written> + Send>;
 
 /// Decode a write call into an [`Apply`].
 pub type Stage<D> = fn(Call) -> Result<Apply<D>, Problem>;
 
 /// A whole transaction on schema `S`, staged: runs once, inside
-/// [`Db::write`](fold3::schema::Db::write).
+/// [`Db::write`](bog::schema::Db::write).
 pub type TxFn<S> =
-    Box<dyn for<'a> FnOnce(&mut <S as Schema>::Write<'a>) -> fold3::Result<Written> + Send>;
+    Box<dyn for<'a> FnOnce(&mut <S as Schema>::Write<'a>) -> bog::Result<Written> + Send>;
 
 /// An extra `POST` route a source gains from its key type (a
 /// `Table<Id<V>, V>` minting ids), which its own impl can't express.
@@ -319,11 +319,11 @@ pub struct Mint<D: SourceDecl> {
 /// The op of a [`Mint`] route.
 pub const MINT_OP: &str = "insert";
 
-/// A resource's change feed: a fold [`Subscription`] whose changes
+/// A resource's change feed: a bog [`Subscription`] whose changes
 /// render as JSON. Each poll yields one commit's changes with the epoch
 /// it committed as.
 ///
-/// [`Subscription`]: fold3::schema::Subscription
+/// [`Subscription`]: bog::schema::Subscription
 pub struct Live {
     poll: Box<dyn FnMut(Duration) -> Result<Option<(u64, Vec<Value>)>, Closed> + Send>,
 }

@@ -1,5 +1,5 @@
-use fold3::schema::*;
-use fold_http::Serve;
+use bog::schema::*;
+use bog_http::Serve;
 
 /// Storable, but has no serde or JSON Schema: not servable.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Codec)]

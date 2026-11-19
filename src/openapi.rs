@@ -86,7 +86,7 @@ pub(crate) fn document(
                 "NotFound": problem("Nothing at this key, or no such route."),
                 "UnsupportedMediaType": problem("The body isn't `application/json`."),
                 "Rejected": problem("A schema constraint refused the write; `at` names the source or view that refused. Nothing was applied."),
-                "Unavailable": problem("Try again later (`Retry-After`): too many pending writes (`overloaded`), a `fold-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."),
+                "Unavailable": problem("Try again later (`Retry-After`): too many pending writes (`overloaded`), a `bog-min-epoch` not reached in time (`epoch-not-reached`), or the store failing (`unavailable`)."),
                 "PayloadTooLarge": problem("The body exceeds the server's limit."),
                 "NotAcceptable": problem("A stream was asked of a route that doesn't stream."),
             },
@@ -100,7 +100,7 @@ pub(crate) fn document(
                 },
             },
             "headers": {
-                "FoldEpoch": {
+                "BogEpoch": {
                     "description": "The epoch of the snapshot read, or the first epoch that includes the write.",
                     "schema": { "type": "integer", "format": "uint64", "minimum": 0 },
                 },
@@ -307,7 +307,7 @@ fn transaction(resources: &[Describe]) -> Value {
 fn success(data: &Value) -> Value {
     json!({
         "description": "Success.",
-        "headers": { EPOCH_HEADER: { "$ref": "#/components/headers/FoldEpoch" } },
+        "headers": { EPOCH_HEADER: { "$ref": "#/components/headers/BogEpoch" } },
         "content": {
             "application/json": {
                 "schema": {

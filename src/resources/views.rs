@@ -3,7 +3,7 @@
 
 use std::ops::Bound;
 
-use fold3::schema::{
+use bog::schema::{
     Data, Delta, GroupRead, GroupView, MapRead, MapView, OrderedRead, OrderedView, SearchRead,
     SearchView, Tokenizer, ValueRead, ValueView,
 };
@@ -116,7 +116,7 @@ impl<K: Data + Wire, V: Data + Wire> Resource for OrderedView<K, V> {
         let after: Option<(V, K)> = p.after.as_deref().map(decode_cursor).transpose()?;
         // Resume at the cursor's value, then skip its ties up to and
         // including the cursor's key: a seek, not a scan from the start.
-        let rows: Box<dyn Iterator<Item = fold3::Result<(K, V)>> + '_> = match (p.order, after) {
+        let rows: Box<dyn Iterator<Item = bog::Result<(K, V)>> + '_> = match (p.order, after) {
             (Order::Asc, None) => Box::new(facade.by_value((min, max))),
             (Order::Asc, Some((cv, ck))) => Box::new(
                 facade
@@ -174,7 +174,7 @@ impl<K: Data + Wire, V: Data + Wire> Resource for GroupView<K, V> {
         match call.op {
             "list" => {
                 let after: Option<(K, V)> = p.after.as_deref().map(decode_cursor).transpose()?;
-                let rows: Box<dyn Iterator<Item = fold3::Result<(K, V, Delta)>> + '_> =
+                let rows: Box<dyn Iterator<Item = bog::Result<(K, V, Delta)>> + '_> =
                     match (p.order, after) {
                         (Order::Asc, None) => Box::new(facade.iter()),
                         (Order::Asc, Some(row)) => {
@@ -192,7 +192,7 @@ impl<K: Data + Wire, V: Data + Wire> Resource for GroupView<K, V> {
             "values" => {
                 let key: K = call.key()?;
                 let after: Option<V> = p.after.as_deref().map(decode_cursor).transpose()?;
-                let rows: Box<dyn Iterator<Item = fold3::Result<(V, Delta)>> + '_> =
+                let rows: Box<dyn Iterator<Item = bog::Result<(V, Delta)>> + '_> =
                     match (p.order, after) {
                         (Order::Asc, None) => Box::new(facade.values(&key)),
                         (Order::Desc, None) => Box::new(facade.values_rev(&key)),

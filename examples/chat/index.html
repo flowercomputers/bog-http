@@ -109,7 +109,7 @@ live.addEventListener("by_author.change", (e) => {
 let typing;
 async function find() {
   const asked = query;
-  const res = await fetch("/find?q=" + encodeURIComponent(asked), { headers: { "fold-min-epoch": String(epoch) } });
+  const res = await fetch("/find?q=" + encodeURIComponent(asked), { headers: { "bog-min-epoch": String(epoch) } });
   const { epoch: at, data } = await res.json();
   if (asked !== query) return;
   saw(at);

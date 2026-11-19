@@ -8,8 +8,8 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use common::{Order, app, raw, send, send_with, server};
-use fold_http::{NoParams, Problem};
-use fold3::schema::{Id, Rejected};
+use bog_http::{NoParams, Problem};
+use bog::schema::{Id, Rejected};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -131,7 +131,7 @@ async fn malformed_transactions_name_the_bad_operation() {
             None,
         ),
         (
-            Value::Array(vec![good.clone(); fold_http::MAX_TX_OPS + 1]),
+            Value::Array(vec![good.clone(); bog_http::MAX_TX_OPS + 1]),
             None,
         ),
     ];
@@ -210,11 +210,11 @@ fn shop_with_routes() -> axum::Router {
                 let customer = Id::new(c.customer);
                 if c.cents > 100 * LIMIT {
                     // a refusal with a status of its own
-                    return Err(fold3::Error::reject(Problem::bad_request("absurd")));
+                    return Err(bog::Error::reject(Problem::bad_request("absurd")));
                 }
                 let spent = tx.read().spend.get(&customer)?.unwrap_or(0);
                 if spent + c.cents > LIMIT {
-                    return Err(fold3::Error::reject(Rejected::new(
+                    return Err(bog::Error::reject(Rejected::new(
                         "checkout",
                         format!("over the {LIMIT} limit"),
                     )));
@@ -342,7 +342,7 @@ async fn min_epoch_reads_wait_for_their_writes() {
         Method::GET,
         "/prefs/a",
         None,
-        &[("fold-min-epoch", &written)],
+        &[("bog-min-epoch", &written)],
     )
     .await;
     assert_eq!(res.status, StatusCode::OK);
@@ -361,7 +361,7 @@ async fn min_epoch_reads_wait_for_their_writes() {
         Method::GET,
         "/prefs/a",
         None,
-        &[("fold-min-epoch", &future)],
+        &[("bog-min-epoch", &future)],
     )
     .await;
     assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -373,7 +373,7 @@ async fn min_epoch_reads_wait_for_their_writes() {
         Method::GET,
         "/prefs/a",
         None,
-        &[("fold-min-epoch", "soon")],
+        &[("bog-min-epoch", "soon")],
     )
     .await;
     assert_eq!(res.status, StatusCode::BAD_REQUEST);
@@ -393,7 +393,7 @@ async fn a_waiting_read_wakes_on_the_commit() {
                 Method::GET,
                 "/prefs/late",
                 None,
-                &[("fold-min-epoch", &next)],
+                &[("bog-min-epoch", &next)],
             )
             .await
         })

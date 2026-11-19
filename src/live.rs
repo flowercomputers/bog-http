@@ -1,8 +1,8 @@
-//! Live feeds: one hub per streamed resource, fanning its fold
+//! Live feeds: one hub per streamed resource, fanning its bog
 //! subscription out to every client.
 //!
 //! A hub starts with its first client and stops with its last. Its
-//! thread drains the subscription (fold's channel is unbounded, so
+//! thread drains the subscription (bog's channel is unbounded, so
 //! something must) and broadcasts each commit's changes once, already
 //! serialized, over a bounded channel. A client that falls behind that
 //! channel isn't buffered without bound: it gets a fresh snapshot.
@@ -90,11 +90,11 @@ impl Hubs {
                 });
                 let (hubs_, hub_) = (self.clone(), hub.clone());
                 std::thread::Builder::new()
-                    .name(format!("fold-http hub {i}"))
+                    .name(format!("bog-http hub {i}"))
                     .spawn(move || run(hubs_, i, hub_, live))
                     .expect("spawn a hub thread");
                 hubs.insert(i, hub.clone());
-                tracing::debug!(target: "fold_http", resource = i, since, "hub started");
+                tracing::debug!(target: "bog_http", resource = i, since, "hub started");
                 hub
             }
         };
@@ -158,14 +158,14 @@ fn stop(hubs: &Hubs, i: usize, hub: &Arc<Hub>, always: bool) -> bool {
     }
     if map.get(&i).is_some_and(|h| Arc::ptr_eq(h, hub)) {
         map.remove(&i);
-        tracing::debug!(target: "fold_http", resource = i, "hub stopped");
+        tracing::debug!(target: "bog_http", resource = i, "hub stopped");
     }
     true
 }
 
 #[cfg(test)]
 mod tests {
-    use fold3::schema::*;
+    use bog::schema::*;
 
     use super::*;
 

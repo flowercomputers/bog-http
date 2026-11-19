@@ -2,8 +2,8 @@
 
 use std::ops::Bound;
 
-use fold3::schema::Cell;
-use fold3::schema::{
+use bog::schema::Cell;
+use bog::schema::{
     CellRead, CellWrite, Change, Data, Delta, Events, EventsWrite, Id, Multiset, MultisetRead,
     MultisetWrite, Read, Set, SetRead, SetWrite, Table, TableWrite,
 };
@@ -179,7 +179,7 @@ impl<T: Data + Wire> Resource for Set<T> {
                 let p: ListParams = call.query()?;
                 let limit = limit(p.limit, DEFAULT_LIMIT)?;
                 let after = p.after.as_deref().map(decode_cursor::<T>).transpose()?;
-                let rows: Box<dyn Iterator<Item = fold3::Result<T>> + '_> = match (p.order, after) {
+                let rows: Box<dyn Iterator<Item = bog::Result<T>> + '_> = match (p.order, after) {
                     (Order::Asc, None) => Box::new(facade.iter()),
                     (Order::Asc, Some(t)) => {
                         Box::new(facade.range((Bound::Excluded(t), Bound::Unbounded)))
@@ -356,7 +356,7 @@ impl<T: Data + Wire> Resource for Multiset<T> {
                 let p: ListParams = call.query()?;
                 let limit = limit(p.limit, DEFAULT_LIMIT)?;
                 let after = p.after.as_deref().map(decode_cursor::<T>).transpose()?;
-                let rows: Box<dyn Iterator<Item = fold3::Result<(T, Delta)>> + '_> =
+                let rows: Box<dyn Iterator<Item = bog::Result<(T, Delta)>> + '_> =
                     match (p.order, after) {
                         (Order::Asc, None) => Box::new(facade.iter()),
                         (Order::Asc, Some(t)) => {

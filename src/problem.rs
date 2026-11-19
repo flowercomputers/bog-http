@@ -2,7 +2,7 @@
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use fold3::Rejected;
+use bog::Rejected;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -144,7 +144,7 @@ impl Problem {
         .with_retry_after(1)
     }
 
-    /// A `fold-min-epoch` read whose epoch didn't arrive in time.
+    /// A `bog-min-epoch` read whose epoch didn't arrive in time.
     pub fn epoch_not_reached(wanted: u64, current: u64) -> Self {
         Problem::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -191,17 +191,17 @@ impl IntoResponse for Problem {
     }
 }
 
-/// How a fold error becomes a response.
+/// How a bog error becomes a response.
 ///
-/// A refusal ([`Error::Rejected`](fold3::Error::Rejected)) answers by
+/// A refusal ([`Error::Rejected`](bog::Error::Rejected)) answers by
 /// what it carries: a [`Rejected`] is a `422` naming the source or view
 /// in `at`; a [`Problem`] is itself, so a write closure chooses its own
 /// status with `Error::reject(Problem::…)`; any other error is a `422`
 /// with its message. Everything else is the store's fault, not the
 /// request's: `503`.
-impl From<fold3::Error> for Problem {
-    fn from(e: fold3::Error) -> Self {
-        use fold3::Error;
+impl From<bog::Error> for Problem {
+    fn from(e: bog::Error) -> Self {
+        use bog::Error;
         if let Some(rejected) = e.rejected::<Rejected>() {
             return Problem::rejected(&rejected.at, &rejected.reason);
         }

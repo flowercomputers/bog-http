@@ -1,4 +1,4 @@
-error: fold-http doesn't serve nested schemas yet; mark the field #[serve(skip)]
+error: bog-http doesn't serve nested schemas yet; mark the field #[serve(skip)]
   --> tests/ui/nested_schema.rs:16:5
    |
 16 |     inner: Inner,

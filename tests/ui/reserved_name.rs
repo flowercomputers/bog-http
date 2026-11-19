@@ -1,5 +1,5 @@
-use fold3::schema::*;
-use fold_http::Serve;
+use bog::schema::*;
+use bog_http::Serve;
 
 #[derive(Schema, Serve)]
 struct Db {

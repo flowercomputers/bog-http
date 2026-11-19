@@ -1,13 +1,13 @@
 //! The gallery's chat (fold2-demos `src/chat.rs`), as a live web API.
 //!
 //! Run it and open <http://127.0.0.1:10777>, in two windows to watch it
-//! push. Data lives in `./chat.fold` (override with `FOLD_DIR`).
+//! push. Data lives in `./chat.bog` (override with `BOG_DIR`).
 //!
 //! ```sh
 //! cargo run --example chat
 //! ```
 //!
-//! Everything the page does is plain fold-http:
+//! Everything the page does is plain bog-http:
 //! - `GET /_live?messages=…&total=&by_author=`: one event stream carrying
 //!   three resources: the newest messages and then each new one as it
 //!   commits, and the two count views likewise. One connection, because
@@ -23,8 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::response::Html;
 use axum::routing::get;
-use fold_http::{Problem, Serve, Server};
-use fold3::schema::*;
+use bog_http::{Problem, Serve, Server};
+use bog::schema::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +135,7 @@ fn now() -> u64 {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let dir = std::env::var("FOLD_DIR").unwrap_or_else(|_| "./chat.fold".into());
+    let dir = std::env::var("BOG_DIR").unwrap_or_else(|_| "./chat.bog".into());
     let addr = std::env::var("CHAT_ADDR").unwrap_or_else(|_| "127.0.0.1:10777".into());
     let db = Chat::open(&dir).build().map_err(std::io::Error::other)?;
 
@@ -149,7 +149,7 @@ async fn main() -> std::io::Result<()> {
             |tx: &mut ChatWrite<'_>, s: Send| {
                 let text = s.text.trim();
                 if text.chars().count() > 1000 {
-                    return Err(fold3::Error::reject(Rejected::new(
+                    return Err(bog::Error::reject(Rejected::new(
                         "send",
                         "at most 1000 characters",
                     )));
@@ -198,7 +198,7 @@ async fn main() -> std::io::Result<()> {
         .serve(&addr, |router| {
             router
                 .route("/", get(page))
-                .layer(fold_http::cors(origins.iter().map(String::as_str)))
+                .layer(bog_http::cors(origins.iter().map(String::as_str)))
         })
         .await
 }

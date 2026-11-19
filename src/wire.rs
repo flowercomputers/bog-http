@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use fold3::schema::Delta;
+use bog::schema::Delta;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use crate::Problem;
 
 /// The response header carrying the epoch of the snapshot a response was
 /// read at, or the epoch a write committed into.
-pub const EPOCH_HEADER: &str = "fold-epoch";
+pub const EPOCH_HEADER: &str = "bog-epoch";
 
 /// The default page size of a listing.
 pub const DEFAULT_LIMIT: usize = 100;
@@ -156,7 +156,7 @@ pub struct Page<T> {
 /// position, so pages stay stable under concurrent writes and skipping
 /// to a page costs nothing.
 pub fn paginate<T, C: Serialize>(
-    mut rows: impl Iterator<Item = fold3::Result<T>>,
+    mut rows: impl Iterator<Item = bog::Result<T>>,
     limit: usize,
     position: impl Fn(&T) -> C,
 ) -> Result<Page<T>, Problem> {

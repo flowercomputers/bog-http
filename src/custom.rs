@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use fold3::schema::Schema;
+use bog::schema::Schema;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::Value;
@@ -45,7 +45,7 @@ pub(crate) fn check_path(path: &str) {
     );
     assert!(
         !path.starts_with("/_") && path != "/openapi.json",
-        "custom route {path:?} is in fold-http's reserved namespace"
+        "custom route {path:?} is in bog-http's reserved namespace"
     );
     assert!(
         !path.contains(['{', '}', '*', '?', '#']),

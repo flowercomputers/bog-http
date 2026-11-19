@@ -1,4 +1,7 @@
-# fold-http — design draft
+# bog-http — design draft
+
+Renamed from fold-http on 2026-11-19 (see the last "Progress" entry). Everything before that
+entry keeps the names of its time: fold-http, `fold-epoch`, fold2, fold3.
 
 Status: milestones 1–5 landed (see "Progress" at the end). Written 2026-10-19 after surveying fold2
 (`master`, ab26fde) and Sam's `bog-serve` (bog-kit `sam/vibe-bog-serve`, 5a0fb83).
@@ -418,3 +421,20 @@ Worth revisiting:
 - `fold3::Error::AfterCommit` (committed, maintenance failed) answers
   `500` though the write stands.
 - The chat example no longer opens the gallery's fold2 data.
+
+### bog-http (2026-11-19)
+
+fold3 was renamed bog and made public; this crate follows. Only names
+moved:
+
+- Crates: `bog-http` and `bog-http-derive` (`bog_http::…`), building on
+  `bog` (`bog::schema::…`) in place of `fold3`.
+- Wire: the epoch headers are `bog-epoch` and `bog-min-epoch`, and the
+  OpenAPI header component is `BogEpoch`. Routes, bodies and events are
+  as they were.
+- Around it: the `tracing` target and the discovery file's version key
+  are `bog_http`, hub threads are named `bog-http hub N`, and the
+  examples read `BOG_DIR` and default to `./chat.bog` / `./shop.bog`.
+- The dependency is bog's public repo, on its `bog-http` branch: bog
+  with the additions listed under the fold3 port, which `master` does
+  not carry yet.

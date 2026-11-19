@@ -1,4 +1,4 @@
-//! [`Resource`](crate::Resource) impls for fold's declaration types.
+//! [`Resource`](crate::Resource) impls for bog's declaration types.
 //!
 //! Sources (`Table`, `Events`, `Set`, `Cell`, `Multiset`) are in [`sources`];
 //! views (`MapView`, `OrderedView`, `GroupView`, `ValueView`,
@@ -13,7 +13,7 @@ pub use views::{By, CompleteParams, Completion, Hit, OrderedParams, SearchParams
 
 use std::ops::Bound;
 
-use fold3::schema::{Change, Data, Delta, Read};
+use bog::schema::{Change, Data, Delta, Read};
 use schemars::SchemaGenerator;
 use serde_json::Value;
 
@@ -44,7 +44,7 @@ fn keyed_rows<'a, K: Data, V: Data>(
     read: &Read<'a, K, V>,
     order: Order,
     after: Option<K>,
-) -> Box<dyn Iterator<Item = fold3::Result<(K, V)>> + 'a> {
+) -> Box<dyn Iterator<Item = bog::Result<(K, V)>> + 'a> {
     match (order, after) {
         (Order::Asc, None) => Box::new(read.iter()),
         (Order::Asc, Some(k)) => Box::new(read.range((Bound::Excluded(k), Bound::Unbounded))),

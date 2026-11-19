@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodFilter, MethodRouter, get, post};
-use fold3::schema::Db;
+use bog::schema::Db;
 use futures_util::StreamExt;
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, SchemaGenerator};
@@ -32,7 +32,7 @@ use crate::wire::{parse_body, parse_query, require_json, respond, to_json};
 use crate::{Problem, Serve};
 
 /// The request header naming the least epoch a read must reflect.
-pub const MIN_EPOCH_HEADER: &str = "fold-min-epoch";
+pub const MIN_EPOCH_HEADER: &str = "bog-min-epoch";
 
 /// Serves one database: every resource its schema exposes, custom
 /// routes, `POST /_tx`, the `/_`-prefixed meta routes, and
@@ -208,7 +208,7 @@ impl<S: Serve> Server<S> {
         self
     }
 
-    /// The OpenAPI `info.version` (of your API, not of fold-http).
+    /// The OpenAPI `info.version` (of your API, not of bog-http).
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
@@ -219,7 +219,7 @@ impl<S: Serve> Server<S> {
         self
     }
 
-    /// How long a read with `fold-min-epoch` waits for that epoch before
+    /// How long a read with `bog-min-epoch` waits for that epoch before
     /// answering `503 epoch-not-reached`. 5 s by default.
     pub fn min_epoch_wait(mut self, wait: Duration) -> Self {
         self.min_epoch_wait = wait;
@@ -272,9 +272,9 @@ impl<S: Serve> Server<S> {
 
     /// A custom write: `POST path` with a JSON body `B`, run by `f` as
     /// one transaction. `f`'s `Err` rolls everything back and answers as
-    /// a [`Problem`] (see its `From<fold3::Error>`); so do the schema's
+    /// a [`Problem`] (see its `From<bog::Error>`); so do the schema's
     /// constraints. To refuse with a status of your own, return
-    /// `Err(fold3::Error::reject(Problem::…))`.
+    /// `Err(bog::Error::reject(Problem::…))`.
     ///
     /// # Panics
     /// As [`get`](Server::get).
@@ -282,7 +282,7 @@ impl<S: Serve> Server<S> {
     where
         B: DeserializeOwned + JsonSchema + Send + 'static,
         R: Serialize + JsonSchema + 'static,
-        F: Fn(&mut S::Write<'_>, B) -> fold3::Result<R> + Send + Sync + 'static,
+        F: Fn(&mut S::Write<'_>, B) -> bog::Result<R> + Send + Sync + 'static,
     {
         check_path(path);
         let (p, s) = (path.to_owned(), summary.to_owned());
@@ -658,7 +658,7 @@ async fn transaction<S: Serve>(st: Arc<Shared<S>>, headers: HeaderMap, body: Byt
 }
 
 /// Answer a read from one fresh snapshot (at or after the request's
-/// `fold-min-epoch`), off the async workers.
+/// `bog-min-epoch`), off the async workers.
 async fn read<S: Serve>(
     st: Arc<Shared<S>>,
     headers: &HeaderMap,
@@ -851,7 +851,7 @@ async fn feed<S: Serve>(
         .join(i, resume, || {
             let snap = st.db.snapshot();
             let live = (st.entries[i].live)(&st.db.at(&snap))?;
-            // fold3 subscribes from the snapshot's epoch, but a commit
+            // bog subscribes from the snapshot's epoch, but a commit
             // published between the two is not delivered: only changes
             // after a snapshot taken now are certain to arrive.
             Some((st.db.snapshot().epoch(), live))
@@ -904,7 +904,7 @@ async fn feed<S: Serve>(
                 }
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::debug!(target: "fold_http", resource = %f.st.described[f.i].name, missed, "stream fell behind: resyncing");
+                    tracing::debug!(target: "bog_http", resource = %f.st.described[f.i].name, missed, "stream fell behind: resyncing");
                     match snapshot_item(&f.st, f.i, &f.call).await {
                         Ok(item) => {
                             f.floor = item.epoch;
@@ -956,7 +956,7 @@ fn change_item(change: &Change) -> Item {
 }
 
 /// Wait, bounded, until the store's frontier reaches the request's
-/// `fold-min-epoch`.
+/// `bog-min-epoch`.
 ///
 /// Wakes on every commit through this server, and polls besides, so
 /// writes made to a shared [`Db`] directly are seen too.
@@ -989,10 +989,10 @@ async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Resul
 }
 
 /// Run one transaction off the async workers, under admission control:
-/// fold serializes writers, so the permits bound how many wait.
+/// bog serializes writers, so the permits bound how many wait.
 async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, Written), Problem> {
     let Ok(permit) = st.permits.clone().try_acquire_owned() else {
-        tracing::warn!(target: "fold_http", "write refused: too many pending");
+        tracing::warn!(target: "bog_http", "write refused: too many pending");
         return Err(Problem::overloaded());
     };
     let db = st.db.clone();
@@ -1001,12 +1001,12 @@ async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, W
         let (written, epoch) = db.write_epoch(apply)?;
         // A write that changed nothing committed nothing: every
         // snapshot already reflects it.
-        Ok::<_, fold3::Error>((epoch.unwrap_or_else(|| db.snapshot().epoch()), written))
+        Ok::<_, bog::Error>((epoch.unwrap_or_else(|| db.snapshot().epoch()), written))
     })
     .await;
     match res {
         Ok(Ok((epoch, written))) => {
-            tracing::debug!(target: "fold_http", epoch, "committed");
+            tracing::debug!(target: "bog_http", epoch, "committed");
             st.committed.send_if_modified(|newest| {
                 let advanced = epoch > *newest;
                 if advanced {
@@ -1018,7 +1018,7 @@ async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, W
         }
         Ok(Err(e)) => {
             let problem = Problem::from(e);
-            tracing::debug!(target: "fold_http", status = problem.status, at = problem.at.as_deref(), "write refused");
+            tracing::debug!(target: "bog_http", status = problem.status, at = problem.at.as_deref(), "write refused");
             Err(problem)
         }
         Err(e) => Err(Problem::internal(format!("write failed: {e}"))),

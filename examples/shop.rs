@@ -9,10 +9,10 @@
 //! curl -s localhost:10777/_schema
 //! ```
 //!
-//! Data lives in `./shop.fold` (override with `FOLD_DIR`).
+//! Data lives in `./shop.bog` (override with `BOG_DIR`).
 
-use fold_http::{Serve, Server};
-use fold3::schema::*;
+use bog_http::{Serve, Server};
+use bog::schema::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -63,7 +63,7 @@ impl Declare for Shop {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let dir = std::env::var("FOLD_DIR").unwrap_or_else(|_| "./shop.fold".into());
+    let dir = std::env::var("BOG_DIR").unwrap_or_else(|_| "./shop.bog".into());
     let db = Shop::open(&dir).build().map_err(std::io::Error::other)?;
     let app = Server::new(db).into_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:10777").await?;
