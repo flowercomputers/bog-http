@@ -431,3 +431,23 @@ fold3 kept fold2's schema layer (the same kinds, `Declare`,
   point `Via` can go.
 - Group listings resume from a `(key, value)` cursor by seeking the key
   and skipping within that one group: fold3 has no `(key, value)` seek.
+
+### After a first app (2026-11-18)
+
+Turf (`../turf`), a small multiplayer game, put the port under load
+(hundreds of bots over HTTP, a browser following five resources) and
+found three gaps, now closed:
+
+- `#[serve(read_only)]` on a source serves its reads and drops its write
+  routes from the router, `/_schema`, OpenAPI and `/_tx`, for sources an
+  application writes only through its own transactions. (Before, the
+  way was `#[serve(skip)]` plus a view defined as the source.)
+- `fold_http::id::option`, the `#[serde(with)]` helper for
+  `Option<Id<_>>` fields.
+- `snapshot=all` in a stream's query (on `/_live`, inside a resource's
+  own query) makes its snapshot the whole listing: every page read from
+  one snapshot, the first as `snapshot` and the rest as `snapshot.more`,
+  up to `MAX_SNAPSHOT_ROWS`. Pages before the last carry the id `-`, not
+  an epoch, so a reconnect mid-snapshot starts over rather than resuming
+  from a state the client never finished receiving. It's opt-in: a
+  stream asking for `limit=15` wants fifteen rows.

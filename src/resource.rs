@@ -404,14 +404,21 @@ pub struct Entry<S: Declare> {
 }
 
 impl<S: Serve> Entry<S> {
-    /// A read-only field: a view, its key and value encoded through
-    /// `via` (see [`Resource`]).
+    /// A read-only field: a view, or a source served
+    /// `#[serve(read_only)]` (its write routes are dropped). Its key and
+    /// value are encoded through `via` (see [`Resource`]).
     pub fn view<D: Resource<M>, M: 'static>(name: &str, via: M, facade: ReadLens<S, D, M>) -> Self {
         let _ = via;
         Entry {
             name: name.to_owned(),
             description: None,
-            describe: Box::new(<D as Resource<M>>::describe),
+            // A source served read-only describes its writes too: leave
+            // them out of the router, `/_schema`, OpenAPI, and `/_tx`.
+            describe: Box::new(|name, g| {
+                let mut d = <D as Resource<M>>::describe(name, g);
+                d.routes.retain(|r| r.method.is_read());
+                d
+            }),
             read: Box::new(move |r, call| {
                 let mut out = None;
                 facade(r, &mut |f| out = Some(<D as Resource<M>>::answer(f, call)));

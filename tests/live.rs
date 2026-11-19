@@ -476,3 +476,86 @@ async fn a_multiplexed_stream_refuses_what_it_cant_carry() {
         assert_eq!(err.0, status, "{query}: {:?}", err.1);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_all_sends_the_whole_listing_at_one_epoch() {
+    let app = app();
+    for i in 0..5 {
+        send(&app, Method::PUT, &format!("/prefs/k{i}"), Some(json!(i))).await;
+    }
+    let mut s = Stream::open(&app, "/prefs?limit=2&snapshot=all", None)
+        .await
+        .unwrap();
+    let mut keys = Vec::new();
+    let mut epochs = Vec::new();
+    for (n, kind) in ["snapshot", "snapshot.more", "snapshot.more"]
+        .iter()
+        .enumerate()
+    {
+        let page = s.next().await;
+        assert_eq!(&page.event, kind);
+        epochs.push(page.data["epoch"].as_u64().unwrap());
+        for row in page.data["data"]["items"].as_array().unwrap() {
+            keys.push(row["key"].as_str().unwrap().to_owned());
+        }
+        if n < 2 {
+            assert_eq!(
+                page.id_text.as_deref(),
+                Some("-"),
+                "mid-snapshot: nothing to resume"
+            );
+        } else {
+            assert_eq!(
+                page.id,
+                Some(epochs[0]),
+                "the last page is the resume point"
+            );
+            assert!(page.data["data"]["next"].is_null());
+        }
+    }
+    assert_eq!(keys, ["k0", "k1", "k2", "k3", "k4"]);
+    assert!(
+        epochs.iter().all(|e| *e == epochs[0]),
+        "one snapshot: {epochs:?}"
+    );
+
+    let put = send(&app, Method::PUT, "/prefs/k9", Some(json!(9))).await;
+    let change = s.next().await;
+    assert_eq!(
+        (change.event.as_str(), change.id),
+        ("change", Some(put.epoch()))
+    );
+
+    // On `/_live`, per resource, inside its own query.
+    let mut s = Stream::open(&app, "/_live?prefs=limit%3D4%26snapshot%3Dall", None)
+        .await
+        .unwrap();
+    let first = s.next().await;
+    assert_eq!(
+        (first.event.as_str(), first.id_text.as_deref()),
+        ("prefs.snapshot", Some("-"))
+    );
+    let last = s.next().await;
+    assert_eq!(last.event, "prefs.snapshot.more");
+    assert_eq!(last.id, Some(put.epoch()));
+    assert_eq!(last.data["data"]["items"].as_array().unwrap().len(), 2);
+
+    // Without it, the snapshot is one page, as before.
+    let mut s = Stream::open(&app, "/prefs?limit=2", None).await.unwrap();
+    let page = s.next().await;
+    assert_eq!(page.event, "snapshot");
+    assert!(page.data["data"]["next"].is_string());
+    assert_eq!(page.id, Some(put.epoch()));
+
+    let (status, _) = Stream::open(&app, "/prefs?snapshot=some", None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let plain = send(&app, Method::GET, "/prefs?snapshot=all", None).await;
+    assert_eq!(
+        plain.status,
+        StatusCode::BAD_REQUEST,
+        "a stream option only"
+    );
+}

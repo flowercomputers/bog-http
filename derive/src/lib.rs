@@ -7,6 +7,8 @@
 //!
 //! - an unannotated field is a source: readable and writable;
 //! - a `#[view]` field is read-only;
+//! - `#[serve(read_only)]` serves a source's reads only: its writes stay
+//!   with the application's own routes;
 //! - `#[serve(skip)]` leaves a field unserved;
 //! - `#[schema]` (nested schemas) must be skipped for now.
 
@@ -51,10 +53,17 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     for f in &fields.named {
         let ident = f.ident.as_ref().expect("named field");
         let ty = &f.ty;
-        if skipped(f)? {
+        let serve = options(f)?;
+        if serve.skip {
             continue;
         }
         let is = |attr: &str| f.attrs.iter().any(|a| a.path().is_ident(attr));
+        if serve.read_only && is("view") {
+            return Err(syn::Error::new_spanned(
+                ident,
+                "views are always read-only; drop #[serve(read_only)]",
+            ));
+        }
         if is("schema") {
             return Err(syn::Error::new_spanned(
                 ident,
@@ -83,7 +92,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
                 (&&#p::Probe::<<#ty as ::fold_http::Shape>::Value>::NEW).via(),
             )
         };
-        entries.push(if is("view") {
+        entries.push(if is("view") || serve.read_only {
             quote_spanned! {ty.span()=>
                 ::fold_http::Entry::<Self>::view::<#ty, _>(
                     #field_name,
@@ -115,19 +124,35 @@ fn expand(input: &DeriveInput) -> syn::Result<Ts> {
     })
 }
 
-fn skipped(f: &syn::Field) -> syn::Result<bool> {
-    let mut skip = false;
+/// A field's `#[serve(...)]` options.
+#[derive(Default)]
+struct Options {
+    skip: bool,
+    read_only: bool,
+}
+
+fn options(f: &syn::Field) -> syn::Result<Options> {
+    let mut o = Options::default();
     for attr in f.attrs.iter().filter(|a| a.path().is_ident("serve")) {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("skip") {
-                skip = true;
+                o.skip = true;
+                Ok(())
+            } else if meta.path.is_ident("read_only") {
+                o.read_only = true;
                 Ok(())
             } else {
-                Err(meta.error("expected `skip`"))
+                Err(meta.error("expected `skip` or `read_only`"))
             }
         })?;
     }
-    Ok(skip)
+    if o.skip && o.read_only {
+        return Err(syn::Error::new_spanned(
+            f.ident.as_ref(),
+            "a skipped field isn't served at all; use `skip` or `read_only`, not both",
+        ));
+    }
+    Ok(o)
 }
 
 /// A field's `///` comment, one line per `#[doc]`, common indent removed.

@@ -173,6 +173,27 @@ pub mod id {
     pub fn deserialize<'de, T, D: Deserializer<'de>>(d: D) -> Result<Id<T>, D::Error> {
         u64::deserialize(d).map(Id::new)
     }
+
+    /// `#[serde(with = "fold_http::id::option")]` for an `Option<Id<_>>`:
+    /// its raw `u64`, or `null`. Pair it with
+    /// `#[schemars(with = "Option<u64>")]`, and with `#[serde(default)]`
+    /// if the field may be left out: serde's `with` doesn't treat a
+    /// missing field as `None` by itself.
+    pub mod option {
+        use fold3::schema::Id;
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        pub fn serialize<T, S: Serializer>(id: &Option<Id<T>>, s: S) -> Result<S::Ok, S::Error> {
+            match id {
+                Some(id) => s.serialize_some(&id.raw()),
+                None => s.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, T, D: Deserializer<'de>>(d: D) -> Result<Option<Id<T>>, D::Error> {
+            Option::<u64>::deserialize(d).map(|raw| raw.map(Id::new))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -189,5 +210,31 @@ mod tests {
         assert_eq!(serde_json::to_string(&s).unwrap(), "\"a\"");
         assert_eq!(<W<String, ViaSerde>>::schema_name(), "string");
         assert_eq!(<W<Id<()>, ViaId>>::schema_name(), "Id");
+    }
+
+    #[test]
+    fn optional_ids_are_numbers_or_null() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Row {
+            #[serde(with = "id::option", default)]
+            from: Option<Id<()>>,
+        }
+        let some = Row {
+            from: Some(Id::new(9)),
+        };
+        assert_eq!(serde_json::to_string(&some).unwrap(), r#"{"from":9}"#);
+        assert_eq!(
+            serde_json::to_string(&Row { from: None }).unwrap(),
+            r#"{"from":null}"#
+        );
+        assert_eq!(serde_json::from_str::<Row>(r#"{"from":9}"#).unwrap(), some);
+        assert_eq!(
+            serde_json::from_str::<Row>(r#"{"from":null}"#).unwrap(),
+            Row { from: None }
+        );
+        assert_eq!(
+            serde_json::from_str::<Row>("{}").unwrap(),
+            Row { from: None }
+        );
     }
 }

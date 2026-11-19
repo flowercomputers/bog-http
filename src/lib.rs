@@ -81,6 +81,12 @@
 //! old). One hub per resource drains fold3's subscription; a client that falls
 //! behind gets a fresh snapshot instead of an unbounded backlog.
 //!
+//! A listing's `snapshot` is one page, as its `GET` would answer. To
+//! follow a whole listing, add `snapshot=all` to the stream's query: the
+//! snapshot is then every page (up to [`MAX_SNAPSHOT_ROWS`] rows), read
+//! from one snapshot, as a `snapshot` event for the first and
+//! `snapshot.more` for the rest; apply them in order before any `change`.
+//!
 //! A page following several resources should use `GET /_live`, which
 //! carries any of them on one connection
 //! (`?messages=order%3Ddesc&total=`, events named `messages.change`):
@@ -138,7 +144,7 @@ pub use resource::{
 pub use resources::{
     By, CompleteParams, Completion, Hit, MultisetAdd, MultisetRemove, OrderedParams, SearchParams,
 };
-pub use server::{Closer, MAX_LIVE, MIN_EPOCH_HEADER, Server};
+pub use server::{Closer, MAX_LIVE, MAX_SNAPSHOT_ROWS, MIN_EPOCH_HEADER, Server};
 pub use via::{Shape, Via, ViaId, ViaSerde, W, Wire, id};
 
 /// A CORS layer for a browser app on another origin (a dev server, a
