@@ -438,3 +438,24 @@ moved:
 - The dependency is bog's public repo, on its `bog-http` branch: bog
   with the additions listed under the fold3 port, which `master` does
   not carry yet.
+
+### Read-only sources, whole-listing snapshots (2026-11-19)
+
+Ported from the other fold3 port (PR #1, "Port to fold3"), which found
+both gaps building a first app, turf:
+
+- `#[serve(read_only)]` on a source serves its reads and drops its write
+  routes from the router, `/_schema`, OpenAPI and `/_tx`, for sources an
+  application writes only through its own transactions. The derive
+  rejects it on views and alongside `skip`.
+- `snapshot=all` in a stream's query (on `/_live`, inside a resource's
+  own query) makes its snapshot the whole listing: every page read from
+  one snapshot, the first as `snapshot` and the rest as `snapshot.more`,
+  up to `MAX_SNAPSHOT_ROWS`. Pages before the last carry the id `-`, not
+  an epoch, so a reconnect mid-snapshot starts over rather than resuming
+  from a state the client never finished receiving. It's opt-in: a
+  stream asking for `limit=15` wants fifteen rows.
+
+That port's third addition, an `Option<Id<_>>` helper, isn't needed
+here: bog's `Id` has serde and schemars impls, so `Option<Id<_>>` is
+covered by theirs.

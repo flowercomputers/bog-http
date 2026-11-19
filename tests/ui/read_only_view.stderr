@@ -1,0 +1,5 @@
+error: views are always read-only; drop #[serve(read_only)]
+ --> tests/ui/read_only_view.rs:9:5
+  |
+9 |     total: MapView<String, i64>,
+  |     ^^^^^

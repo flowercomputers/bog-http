@@ -707,6 +707,10 @@ fn wants_events(headers: &HeaderMap) -> bool {
 /// the resource; each event's `id` is its epoch. A reconnect carrying
 /// `Last-Event-ID` resumes from the hub's ring when it can, and gets a
 /// fresh snapshot when it can't; so does a client that falls behind.
+///
+/// With `snapshot=all` in the query, a listing's snapshot is the whole
+/// listing: the first page as `snapshot`, then each further page as
+/// `snapshot.more`, all read from one snapshot (see [`snapshot_items`]).
 async fn stream<S: Serve>(
     st: Arc<Shared<S>>,
     i: usize,
@@ -722,12 +726,14 @@ async fn stream<S: Serve>(
         Err(problem) => return problem.into_response(),
     };
     let events = items.map(|item| {
-        Ok::<_, std::convert::Infallible>(
-            Event::default()
-                .event(item.kind)
-                .id(item.epoch.to_string())
-                .data(item.data),
-        )
+        // Mid-snapshot, there's nothing to resume from: an id that
+        // isn't an epoch makes a reconnect start over.
+        let id = if item.partial {
+            PARTIAL_ID.to_owned()
+        } else {
+            item.epoch.to_string()
+        };
+        Ok::<_, std::convert::Infallible>(Event::default().event(item.kind).id(id).data(item.data))
     });
     Sse::new(events)
         .keep_alive(KeepAlive::default())
@@ -803,14 +809,14 @@ async fn multiplex<S: Serve>(
             Err(problem) => return problem.into_response(),
         }
     }
-    let mut epochs = vec![0u64; feeds.len()];
+    let mut epochs = vec![0u64.to_string(); feeds.len()];
     let events = futures_util::stream::select_all(feeds).map(move |(k, name, item)| {
-        epochs[k] = item.epoch;
-        let id = epochs
-            .iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(".");
+        epochs[k] = if item.partial {
+            PARTIAL_ID.to_owned()
+        } else {
+            item.epoch.to_string()
+        };
+        let id = epochs.join(".");
         Ok::<_, std::convert::Infallible>(
             Event::default()
                 .event(format!("{name}.{}", item.kind))
@@ -835,7 +841,17 @@ struct Item {
     kind: &'static str,
     epoch: u64,
     data: String,
+    /// A snapshot page with more to follow: not a point to resume from.
+    partial: bool,
 }
+
+/// The `id` (or `/_live` id component) of a snapshot page with more to
+/// follow: not an epoch, so a reconnect gets a fresh snapshot.
+const PARTIAL_ID: &str = "-";
+
+/// The most rows a `snapshot=all` snapshot sends. Past it, the last page
+/// keeps its `next` cursor: the client can tell it was cut short.
+pub const MAX_SNAPSHOT_ROWS: usize = 100_000;
 
 /// Resource `i`'s feed for one client: a snapshot (or a replay from
 /// `resume`), then every later change, resyncing with a snapshot if the
@@ -843,9 +859,10 @@ struct Item {
 async fn feed<S: Serve>(
     st: Arc<Shared<S>>,
     i: usize,
-    call: Call,
+    mut call: Call,
     resume: Option<u64>,
 ) -> Result<impl futures_util::Stream<Item = Item> + Send + 'static, Problem> {
+    let all = take_snapshot_all(&mut call)?;
     let joined = st
         .hubs
         .join(i, resume, || {
@@ -869,9 +886,9 @@ async fn feed<S: Serve>(
             // Subscribed already: take the snapshot now, and the tail
             // above its epoch is exactly what it lacks. A malformed query
             // fails here, as a plain problem rather than a stream.
-            let item = snapshot_item(&st, i, &call).await?;
-            let floor = item.epoch;
-            queue.push_back(item);
+            let items = snapshot_items(&st, i, &call, all).await?;
+            let floor = items[0].epoch;
+            queue.extend(items);
             floor
         }
     };
@@ -882,6 +899,7 @@ async fn feed<S: Serve>(
         st,
         i,
         call,
+        all,
         rx: joined.rx,
         floor,
         queue,
@@ -905,10 +923,10 @@ async fn feed<S: Serve>(
                 Ok(_) => {}
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     tracing::debug!(target: "bog_http", resource = %f.st.described[f.i].name, missed, "stream fell behind: resyncing");
-                    match snapshot_item(&f.st, f.i, &f.call).await {
-                        Ok(item) => {
-                            f.floor = item.epoch;
-                            f.queue.push_back(item);
+                    match snapshot_items(&f.st, f.i, &f.call, f.all).await {
+                        Ok(items) => {
+                            f.floor = items[0].epoch;
+                            f.queue.extend(items);
                         }
                         Err(_) => return None,
                     }
@@ -924,6 +942,8 @@ struct Feed<S: Serve> {
     st: Arc<Shared<S>>,
     i: usize,
     call: Call,
+    /// Snapshots carry the whole listing (`snapshot=all`).
+    all: bool,
     rx: broadcast::Receiver<Arc<Change>>,
     /// The newest epoch this client has: changes at or below it are
     /// already in what it was sent.
@@ -933,18 +953,95 @@ struct Feed<S: Serve> {
     _open: Open,
 }
 
-async fn snapshot_item<S: Serve>(
+/// Resource `i`'s snapshot events: what its `GET` answers, or with
+/// `all`, every page of the listing, each read from the same snapshot so
+/// together they are one consistent state at one epoch.
+async fn snapshot_items<S: Serve>(
     st: &Arc<Shared<S>>,
     i: usize,
     call: &Call,
-) -> Result<Item, Problem> {
-    let call = call.clone();
-    let (epoch, data) = snapshot(st.clone(), move |st, r| (st.entries[i].read)(r, &call)).await?;
-    Ok(Item {
-        kind: "snapshot",
-        epoch,
-        data: json!({ "epoch": epoch, "data": data }).to_string(),
+    all: bool,
+) -> Result<Vec<Item>, Problem> {
+    let mut call = call.clone();
+    let st = st.clone();
+    tokio::task::spawn_blocking(move || {
+        let snap = st.db.snapshot();
+        let facades = st.db.at(&snap);
+        let epoch = snap.epoch();
+        let mut items = Vec::new();
+        let mut rows = 0;
+        loop {
+            let data = (st.entries[i].read)(&facades, &call)?;
+            rows += data["items"].as_array().map_or(0, Vec::len);
+            let next = data["next"].as_str().map(str::to_owned);
+            items.push(Item {
+                kind: if items.is_empty() {
+                    "snapshot"
+                } else {
+                    "snapshot.more"
+                },
+                epoch,
+                data: json!({ "epoch": epoch, "data": data }).to_string(),
+                partial: true,
+            });
+            match next {
+                Some(after) if all && rows < MAX_SNAPSHOT_ROWS => {
+                    call.query = Some(with_after(call.query.as_deref(), &after)?);
+                }
+                _ => break,
+            }
+        }
+        if let Some(last) = items.last_mut() {
+            last.partial = false;
+        }
+        Ok(items)
     })
+    .await
+    .map_err(|e| Problem::internal(format!("read failed: {e}")))?
+}
+
+/// Take a stream's own `snapshot=all` out of the query its resource
+/// reads.
+fn take_snapshot_all(call: &mut Call) -> Result<bool, Problem> {
+    let mut pairs: Vec<(String, String)> = parse_query(call.query.as_deref())?;
+    let mut all = false;
+    let mut err = None;
+    pairs.retain(|(k, v)| {
+        if k != "snapshot" {
+            return true;
+        }
+        match v.as_str() {
+            "all" => all = true,
+            _ => {
+                err = Some(Problem::bad_request(format!(
+                    "snapshot={v}: the only option is `all`"
+                )))
+            }
+        }
+        false
+    });
+    if let Some(problem) = err {
+        return Err(problem);
+    }
+    call.query = encode_query(&pairs)?;
+    Ok(all)
+}
+
+/// `query` with its `after` cursor replaced by `after`.
+fn with_after(query: Option<&str>, after: &str) -> Result<String, Problem> {
+    let mut pairs: Vec<(String, String)> = parse_query(query)?;
+    pairs.retain(|(k, _)| k != "after");
+    pairs.push(("after".to_owned(), after.to_owned()));
+    Ok(encode_query(&pairs)?.unwrap_or_default())
+}
+
+fn encode_query(pairs: &[(String, String)]) -> Result<Option<String>, Problem> {
+    if pairs.is_empty() {
+        return Ok(None);
+    }
+    serde_urlencoded::to_string(pairs)
+        .map(Some)
+        .map_err(|e| Problem::internal(format!("query: {e}")))
 }
 
 fn change_item(change: &Change) -> Item {
@@ -952,6 +1049,7 @@ fn change_item(change: &Change) -> Item {
         kind: "change",
         epoch: change.epoch,
         data: change.data.clone(),
+        partial: false,
     }
 }
 

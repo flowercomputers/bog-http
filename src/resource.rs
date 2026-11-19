@@ -408,7 +408,8 @@ pub struct Entry<S: Schema> {
 }
 
 impl<S: Serve> Entry<S> {
-    /// A read-only field: a view.
+    /// A read-only field: a view, or a source served
+    /// `#[serve(read_only)]` (its write routes are dropped).
     pub fn view<D: Resource>(
         name: &str,
         facade: for<'r, 'a> fn(&'r S::Read<'a>, Tie<'a>) -> &'r D::Facade<'a>,
@@ -416,7 +417,13 @@ impl<S: Serve> Entry<S> {
         Entry {
             name: name.to_owned(),
             description: None,
-            describe: Box::new(D::describe),
+            // A source served read-only describes its writes too: leave
+            // them out of the router, `/_schema`, OpenAPI, and `/_tx`.
+            describe: Box::new(|name, g| {
+                let mut d = D::describe(name, g);
+                d.routes.retain(|r| r.method.is_read());
+                d
+            }),
             read: Box::new(move |r: &S::Read<'_>, call: &Call| {
                 D::answer(facade(r, PhantomData), call)
             }),
