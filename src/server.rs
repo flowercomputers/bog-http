@@ -987,7 +987,8 @@ async fn feed<S: Serve>(
                         Err(_) => return None,
                     }
                 }
-                // The database closed: end the stream.
+                // The hub stopped (the database closed, or a change
+                // failed to render): end the stream.
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }

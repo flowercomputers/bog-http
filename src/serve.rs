@@ -11,9 +11,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::Router;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use serde_json::json;
+use tower_http::timeout::RequestBodyTimeoutLayer;
 
 use crate::{Serve, Server};
+
+/// How long a client may take to send a request's headers.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a request body may go without sending anything.
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long shutdown waits for in-flight requests before dropping them
+/// and checkpointing anyway.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Where a server listens, as its discovery file reports it.
 enum Endpoint {
@@ -43,9 +56,13 @@ impl<S: Serve> Server<S> {
     }
 
     /// Serve on `addr` until ctrl-c, SIGTERM, or [`idle_exit`], then shut
-    /// down gracefully: end live streams, finish in-flight requests,
-    /// remove the discovery file, and checkpoint, so the next open
-    /// replays no WAL.
+    /// down gracefully: end live streams, finish in-flight requests (for
+    /// up to 5 s), remove the discovery file, and checkpoint, so the next
+    /// open replays no WAL.
+    ///
+    /// A client gets 30 s to send its request's headers, and its body
+    /// may go 30 s without sending anything; past either, the request is
+    /// dropped, so a stalled client can't hold a connection for good.
     ///
     /// `layer` wraps the router first: CORS, extra routes, tracing. On a
     /// loopback address the server answers only to `localhost`,
@@ -123,7 +140,7 @@ impl<S: Serve> Server<S> {
         let idle_exit = self.idle_exit;
         let discovery = self.discovery.clone();
         let advert = advert(&endpoint, &self.title, self.guard.token.is_some());
-        let app = layer(self.into_router());
+        let app = layer(self.into_router()).layer(RequestBodyTimeoutLayer::new(BODY_READ_TIMEOUT));
 
         if let Some(path) = &discovery {
             write_atomically(path, &advert)?;
@@ -137,19 +154,63 @@ impl<S: Serve> Server<S> {
             }
             closer.close();
         };
-        let served = axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown)
-            .await;
+        serve_until(listener, app, shutdown).await;
 
         if let Some(path) = &discovery {
             remove_if_ours(path);
         }
-        served?;
         tokio::task::spawn_blocking(move || db.checkpoint())
             .await
             .map_err(std::io::Error::other)?
             .map(|_| ())
             .map_err(std::io::Error::other)
+    }
+}
+
+/// Serve connections until `shutdown`, then let in-flight requests
+/// finish, for up to [`SHUTDOWN_GRACE`]; whatever is left is dropped.
+///
+/// Rather than `axum::serve`, which gives hyper no timer, and so no
+/// header timeout, and waits on in-flight requests without limit.
+async fn serve_until<L: axum::serve::Listener>(
+    mut listener: L,
+    app: Router,
+    shutdown: impl Future<Output = ()>,
+) {
+    let mut http = hyper::server::conn::http1::Builder::new();
+    http.timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT);
+    let service = TowerToHyperService::new(app);
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let mut conns = tokio::task::JoinSet::new();
+    let mut shutdown = std::pin::pin!(shutdown);
+    loop {
+        let (io, _) = tokio::select! {
+            accepted = listener.accept() => accepted,
+            () = &mut shutdown => break,
+        };
+        while conns.try_join_next().is_some() {}
+        let conn = http
+            .serve_connection(TokioIo::new(io), service.clone())
+            .with_upgrades();
+        let mut stopping = stopping.clone();
+        conns.spawn(async move {
+            let mut conn = std::pin::pin!(conn);
+            tokio::select! {
+                _ = conn.as_mut() => return,
+                _ = stopping.wait_for(|stop| *stop) => conn.as_mut().graceful_shutdown(),
+            }
+            let _ = conn.await;
+        });
+    }
+    drop(listener);
+    stop.send_replace(true);
+    let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
+        while conns.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        tracing::warn!(target: "bog_http", requests = conns.len(), "shutdown: dropping requests still in flight");
     }
 }
 

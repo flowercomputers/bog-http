@@ -595,7 +595,9 @@ async fn live_clients_converge_under_churn() {
         Habits {
             events: 40,
             pause_ms: (0, 30),
-            pace_ms: 0,
+            // Enough that writing outlasts several reconnects per client:
+            // unpaced, it can be over before any resumes from the ring.
+            pace_ms: 2,
         },
     )
     .await;
