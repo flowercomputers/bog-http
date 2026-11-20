@@ -122,9 +122,21 @@ impl Hubs {
 
 /// A hub's thread: drain, serialize, keep, broadcast; stop when the last
 /// client has gone or the database has closed.
+///
+/// A change that fails to render (a value whose `Serialize` fails or
+/// panics) stops the hub too: its streams end, so their clients
+/// reconnect and resync from a snapshot, rather than wait on a hub that
+/// will never speak again.
 fn run(hubs: Arc<Hubs>, i: usize, hub: Arc<Hub>, mut live: Live) {
     loop {
-        match live.poll(IDLE_CHECK) {
+        let polled =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| live.poll(IDLE_CHECK)));
+        let Ok(polled) = polled else {
+            tracing::error!(target: "bog_http", resource = i, "a change failed to render: stopping its hub, ending its streams");
+            stop(&hubs, i, &hub, true);
+            return;
+        };
+        match polled {
             Ok(Some((epoch, changes))) => {
                 let data = json!({ "epoch": epoch, "changes": changes }).to_string();
                 let change = Arc::new(Change { epoch, data });

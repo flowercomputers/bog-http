@@ -51,6 +51,7 @@ pub struct Server<S: Serve> {
     pub(crate) custom: Vec<Custom<S>>,
     pub(crate) min_epoch_wait: Duration,
     pub(crate) max_pending_writes: usize,
+    pub(crate) max_concurrent_reads: usize,
     pub(crate) body_limit: usize,
     pub(crate) closing: watch::Sender<bool>,
     pub(crate) guard: Guard,
@@ -140,6 +141,10 @@ struct Shared<S: Serve> {
     /// Admission control: one permit per write in flight.
     permits: Arc<Semaphore>,
     max_pending_writes: usize,
+    /// Hands writes to the writer thread, which runs them in order.
+    writer: std::sync::mpsc::Sender<WriteJob>,
+    /// One permit per read running on the blocking pool.
+    reads: Arc<Semaphore>,
     /// The newest epoch a write through this server committed.
     committed: watch::Sender<u64>,
     min_epoch_wait: Duration,
@@ -149,6 +154,8 @@ struct Shared<S: Serve> {
 }
 
 type St<S> = State<Arc<Shared<S>>>;
+
+type WriteJob = Box<dyn FnOnce() + Send>;
 
 impl<S: Serve> Server<S> {
     /// Serve `db`. Pass a `Db` to hand it over, or an `Arc<Db>` to keep
@@ -163,6 +170,7 @@ impl<S: Serve> Server<S> {
             custom: Vec::new(),
             min_epoch_wait: Duration::from_secs(5),
             max_pending_writes: 1024,
+            max_concurrent_reads: 128,
             body_limit: 2 << 20,
             closing: watch::Sender::new(false),
             guard: Guard::default(),
@@ -229,9 +237,24 @@ impl<S: Serve> Server<S> {
     /// How many writes may be queued or running at once; beyond that a
     /// write is refused with `503 overloaded` and `Retry-After`, rather
     /// than queueing without bound. 1024 by default; 0 makes the server
-    /// read-only.
+    /// read-only. Writes run one at a time on the server's own thread, so
+    /// queued writes hold no thread of the runtime's.
     pub fn max_pending_writes(mut self, n: usize) -> Self {
         self.max_pending_writes = n;
+        self
+    }
+
+    /// How many reads (and stream snapshots) may run at once on the
+    /// runtime's blocking pool; more wait their turn holding no thread,
+    /// and never run if their client goes away first. 128 by default.
+    /// Keep it below the runtime's `max_blocking_threads` (512 by
+    /// default) so a flood of reads can't fill the pool.
+    ///
+    /// # Panics
+    /// If `n` is 0: no read could ever run.
+    pub fn max_concurrent_reads(mut self, n: usize) -> Self {
+        assert!(n > 0, "max_concurrent_reads must be at least 1");
+        self.max_concurrent_reads = n;
         self
     }
 
@@ -337,6 +360,18 @@ impl<S: Serve> Server<S> {
         let body_limit = self.body_limit;
         let guard = self.guard.clone();
         let activity = self.activity.clone();
+        let (writer, jobs) = std::sync::mpsc::channel::<WriteJob>();
+        std::thread::Builder::new()
+            .name("bog-http writer".into())
+            .spawn(move || {
+                // Ends once the router, and with it every sender, is gone.
+                for job in jobs {
+                    // A write that panics fails its own request (its reply
+                    // is dropped), not every write after it.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                }
+            })
+            .expect("spawn the writer thread");
         let shared = Arc::new(Shared {
             db: self.db,
             entries,
@@ -347,6 +382,8 @@ impl<S: Serve> Server<S> {
             schema,
             permits: Arc::new(Semaphore::new(self.max_pending_writes)),
             max_pending_writes: self.max_pending_writes,
+            writer,
+            reads: Arc::new(Semaphore::new(self.max_concurrent_reads)),
             committed,
             min_epoch_wait: self.min_epoch_wait,
             hubs: Arc::default(),
@@ -673,19 +710,30 @@ async fn read<S: Serve>(
     }
 }
 
-/// `answer` over one fresh snapshot, on the blocking pool: the data and
-/// the snapshot's epoch.
+/// `answer` over one fresh snapshot, on the blocking pool once a read
+/// permit is free: the data and the snapshot's epoch.
 async fn snapshot<S: Serve>(
     st: Arc<Shared<S>>,
     answer: impl FnOnce(&Shared<S>, &S::Read<'_>) -> Result<Value, Problem> + Send + 'static,
 ) -> Result<(u64, Value), Problem> {
+    let permit = read_permit(&st).await;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let snap = st.db.snapshot();
         let facades = st.db.at(&snap);
         answer(&st, &facades).map(|data| (snap.epoch(), data))
     })
     .await
     .map_err(|e| Problem::internal(format!("read failed: {e}")))?
+}
+
+/// Wait for a turn to read: see [`Server::max_concurrent_reads`].
+async fn read_permit<S: Serve>(st: &Shared<S>) -> tokio::sync::OwnedSemaphorePermit {
+    st.reads
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("the read semaphore is never closed")
 }
 
 /// Whether the client asked for Server-Sent Events.
@@ -802,6 +850,12 @@ async fn multiplex<S: Serve>(
         .filter(|ids: &Vec<Option<u64>>| ids.len() == picked.len())
         .unwrap_or_else(|| vec![None; picked.len()]);
 
+    // Until a resource sends something, its slot is what the client
+    // already holds: the epoch it resumed from, or nothing.
+    let mut epochs: Vec<String> = resume
+        .iter()
+        .map(|r| r.map_or_else(|| PARTIAL_ID.to_owned(), |e| e.to_string()))
+        .collect();
     let mut feeds = Vec::with_capacity(picked.len());
     for (k, ((i, name, call), resume)) in picked.into_iter().zip(resume).enumerate() {
         match feed(st.clone(), i, call, resume).await {
@@ -809,7 +863,6 @@ async fn multiplex<S: Serve>(
             Err(problem) => return problem.into_response(),
         }
     }
-    let mut epochs = vec![0u64.to_string(); feeds.len()];
     let events = futures_util::stream::select_all(feeds).map(move |(k, name, item)| {
         epochs[k] = if item.partial {
             PARTIAL_ID.to_owned()
@@ -863,6 +916,9 @@ async fn feed<S: Serve>(
     resume: Option<u64>,
 ) -> Result<impl futures_util::Stream<Item = Item> + Send + 'static, Problem> {
     let all = take_snapshot_all(&mut call)?;
+    // An id past the store's epoch came from another store (or a restored
+    // one): there's nothing to resume, so start over with a snapshot.
+    let resume = resume.filter(|&e| e <= st.db.snapshot().epoch());
     let joined = st
         .hubs
         .join(i, resume, || {
@@ -931,7 +987,8 @@ async fn feed<S: Serve>(
                         Err(_) => return None,
                     }
                 }
-                // The database closed: end the stream.
+                // The hub stopped (the database closed, or a change
+                // failed to render): end the stream.
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
@@ -964,7 +1021,9 @@ async fn snapshot_items<S: Serve>(
 ) -> Result<Vec<Item>, Problem> {
     let mut call = call.clone();
     let st = st.clone();
+    let permit = read_permit(&st).await;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let snap = st.db.snapshot();
         let facades = st.db.at(&snap);
         let epoch = snap.epoch();
@@ -1086,23 +1145,29 @@ async fn reach_min_epoch<S: Serve>(st: &Shared<S>, headers: &HeaderMap) -> Resul
     }
 }
 
-/// Run one transaction off the async workers, under admission control:
-/// bog serializes writers, so the permits bound how many wait.
+/// Run one transaction on the writer thread, under admission control:
+/// bog serializes writers, so the permits bound how many wait. Waiting
+/// writes sit in the writer's queue, holding no thread of the runtime's.
 async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, Written), Problem> {
     let Ok(permit) = st.permits.clone().try_acquire_owned() else {
         tracing::warn!(target: "bog_http", "write refused: too many pending");
         return Err(Problem::overloaded());
     };
     let db = st.db.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let (reply, done) = tokio::sync::oneshot::channel();
+    let job: WriteJob = Box::new(move || {
         let _permit = permit;
-        let (written, epoch) = db.write_epoch(apply)?;
-        // A write that changed nothing committed nothing: every
-        // snapshot already reflects it.
-        Ok::<_, bog::Error>((epoch.unwrap_or_else(|| db.snapshot().epoch()), written))
-    })
-    .await;
-    match res {
+        let res = db.write_epoch(apply).map(|(written, epoch)| {
+            // A write that changed nothing committed nothing: every
+            // snapshot already reflects it.
+            (epoch.unwrap_or_else(|| db.snapshot().epoch()), written)
+        });
+        let _ = reply.send(res);
+    });
+    if st.writer.send(job).is_err() {
+        return Err(Problem::internal("the writer thread has stopped"));
+    }
+    match done.await {
         Ok(Ok((epoch, written))) => {
             tracing::debug!(target: "bog_http", epoch, "committed");
             st.committed.send_if_modified(|newest| {
@@ -1119,7 +1184,8 @@ async fn commit<S: Serve>(st: &Arc<Shared<S>>, apply: TxFn<S>) -> Result<(u64, W
             tracing::debug!(target: "bog_http", status = problem.status, at = problem.at.as_deref(), "write refused");
             Err(problem)
         }
-        Err(e) => Err(Problem::internal(format!("write failed: {e}"))),
+        // The write panicked, dropping its reply.
+        Err(_) => Err(Problem::internal("write failed: it panicked")),
     }
 }
 

@@ -47,8 +47,10 @@ pub(crate) fn loopback_hosts() -> Vec<String> {
 
 pub(crate) async fn guard(State(g): State<Guard>, mut req: Request, next: Next) -> Response {
     if let Some(hosts) = &g.hosts
-        && let Some(host) = req.headers().get(header::HOST)
-        && !host_allowed(host, hosts)
+        && !req
+            .headers()
+            .get(header::HOST)
+            .is_some_and(|host| host_allowed(host, hosts))
     {
         return Problem::new(
             StatusCode::FORBIDDEN,
@@ -66,8 +68,9 @@ pub(crate) async fn guard(State(g): State<Guard>, mut req: Request, next: Next) 
         req.headers()
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|t| t.trim().to_owned())
+            .and_then(|v| v.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map(|(_, t)| t.trim().to_owned())
     });
     if let Some(uri) = uri {
         *req.uri_mut() = uri;

@@ -113,6 +113,8 @@ dependencies = [
  "bog-http-derive",
  "futures-util",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "schemars",
  "serde",
  "serde_json",
@@ -750,7 +752,9 @@ dependencies = [
  "bitflags",
  "bytes",
  "http",
+ "http-body",
  "pin-project-lite",
+ "tokio",
  "tower-layer",
  "tower-service",
 ]
