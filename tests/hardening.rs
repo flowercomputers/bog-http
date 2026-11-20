@@ -49,13 +49,11 @@ async fn a_last_event_id_from_the_future_gets_a_snapshot() {
     }
 }
 
-/// On `/_live`, the event id holds one epoch per resource. Before a
-/// resource has sent anything on this connection its slot reads `0`,
-/// which a reconnect takes as "this client holds that resource as of
-/// epoch 0", and while the hub still has every change since 0 it
-/// replays them without a snapshot, on top of whatever the client
-/// actually holds. A resource the connection never delivered must
-/// start from a snapshot.
+/// On `/_live`, the event id holds one epoch per resource. A slot for a
+/// resource that hasn't sent anything on this connection must not claim
+/// an epoch (it once read `0`, and a reconnect replayed every change
+/// since 0 without a snapshot, on top of whatever the client held). A
+/// resource the connection never delivered starts from a snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_multiplexed_resume_never_claims_a_resource_it_had_not_sent() {
     let app = app();

@@ -802,6 +802,12 @@ async fn multiplex<S: Serve>(
         .filter(|ids: &Vec<Option<u64>>| ids.len() == picked.len())
         .unwrap_or_else(|| vec![None; picked.len()]);
 
+    // Until a resource sends something, its slot is what the client
+    // already holds: the epoch it resumed from, or nothing.
+    let mut epochs: Vec<String> = resume
+        .iter()
+        .map(|r| r.map_or_else(|| PARTIAL_ID.to_owned(), |e| e.to_string()))
+        .collect();
     let mut feeds = Vec::with_capacity(picked.len());
     for (k, ((i, name, call), resume)) in picked.into_iter().zip(resume).enumerate() {
         match feed(st.clone(), i, call, resume).await {
@@ -809,7 +815,6 @@ async fn multiplex<S: Serve>(
             Err(problem) => return problem.into_response(),
         }
     }
-    let mut epochs = vec![0u64.to_string(); feeds.len()];
     let events = futures_util::stream::select_all(feeds).map(move |(k, name, item)| {
         epochs[k] = if item.partial {
             PARTIAL_ID.to_owned()
@@ -863,6 +868,9 @@ async fn feed<S: Serve>(
     resume: Option<u64>,
 ) -> Result<impl futures_util::Stream<Item = Item> + Send + 'static, Problem> {
     let all = take_snapshot_all(&mut call)?;
+    // An id past the store's epoch came from another store (or a restored
+    // one): there's nothing to resume, so start over with a snapshot.
+    let resume = resume.filter(|&e| e <= st.db.snapshot().epoch());
     let joined = st
         .hubs
         .join(i, resume, || {
