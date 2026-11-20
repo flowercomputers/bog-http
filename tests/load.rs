@@ -739,8 +739,7 @@ async fn timed_writes(app: &Router, n: usize) -> Vec<Duration> {
     lat
 }
 
-/// Reads and writes share tokio's blocking pool, and only writes are
-/// admission-controlled. Thousands of slow reads (a custom route that
+/// Thousands of slow reads (a custom route that
 /// takes 20 ms, standing in for a big listing or search) shouldn't push
 /// a write's latency into seconds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -781,6 +780,53 @@ async fn reads_cannot_starve_writes() {
     assert!(
         percentile(&loaded, 0.99) < Duration::from_millis(500),
         "writes queued behind reads"
+    );
+}
+
+/// The other way round: bog runs one write at a time, so a burst of
+/// slow writes (a custom route that takes 20 ms) queues. Writes waiting
+/// their turn mustn't hold the threads reads run on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "measures latency; run with --release --ignored --nocapture"]
+async fn writes_cannot_starve_reads() {
+    let app = server()
+        .post(
+            "/slow",
+            "A slow write",
+            |_: &mut common::ShopWrite<'_>, _: Value| -> bog::Result<()> {
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(())
+            },
+        )
+        .into_router();
+    let quiet = timed_reads(&app, 50).await;
+
+    // Under the default `max_pending_writes` (1024): all are admitted.
+    let writers = 1000;
+    let mut flood = Vec::new();
+    for _ in 0..writers {
+        let app = app.clone();
+        flood.push(tokio::spawn(async move {
+            send(&app, Method::POST, "/slow", Some(json!(null)))
+                .await
+                .status
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let loaded = timed_reads(&app, 50).await;
+    for f in flood {
+        assert_eq!(f.await.unwrap(), StatusCode::OK);
+    }
+    eprintln!(
+        "read latency p50/p99: quiet {:?}/{:?}, under {writers} slow writes {:?}/{:?}",
+        percentile(&quiet, 0.5),
+        percentile(&quiet, 0.99),
+        percentile(&loaded, 0.5),
+        percentile(&loaded, 0.99),
+    );
+    assert!(
+        percentile(&loaded, 0.99) < Duration::from_millis(500),
+        "reads queued behind writes"
     );
 }
 

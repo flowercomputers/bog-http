@@ -49,7 +49,7 @@
 //!
 //! # Writes
 //! Every write is one bog transaction, decoded on the request's thread
-//! and applied on the blocking pool; a malformed request never opens a
+//! and applied on the server's writer thread; a malformed request never opens a
 //! transaction, and a refusal rolls everything back (`422`, naming the
 //! refusing source or view in `at`).
 //!
@@ -64,6 +64,9 @@
 //!   (bounded by [`Server::min_epoch_wait`]) until that epoch is visible.
 //! - [`Server::max_pending_writes`] bounds the writes waiting: past it,
 //!   writes get `503 overloaded` with `Retry-After` instead of piling up.
+//! - [`Server::max_concurrent_reads`] bounds the reads running: past it,
+//!   reads wait their turn, so neither reads nor writes can starve the
+//!   other.
 //!
 //! # Live
 //! Every listing and singleton `GET` also streams: ask with
